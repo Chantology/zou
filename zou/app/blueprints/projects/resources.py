@@ -1891,6 +1891,55 @@ class ProductionScheduleItemsResource(MethodView):
         return schedule_service.get_schedule_items(project_id)
 
 
+class ProductionScheduleSegmentsResource(MethodView, ArgsMixin):
+    """
+    Resource to retrieve the schedule segments of given production.
+    """
+
+    @jwt_required()
+    def get(self, project_id):
+        """
+        Get production schedule segments
+        ---
+        description: Retrieve every segment cut into the bars of given
+          production, for its tasks as well as for its schedule items. The
+          schedule needs them all at once, one request per bar would not
+          scale.
+        tags:
+          - Projects
+        parameters:
+          - in: path
+            name: project_id
+            required: true
+            schema:
+              type: string
+              format: uuid
+            description: Project unique identifier
+            example: a24a6ea4-ce75-4665-a070-57453082c25
+          - in: query
+            name: task_type_id
+            required: false
+            schema:
+              type: string
+              format: uuid
+            description: Restrict the result to one task type
+        responses:
+          200:
+            description: All schedule segments of given production
+            content:
+              application/json:
+                schema:
+                  type: array
+                  items:
+                    type: object
+        """
+        permissions_service.check_project_access(project_id)
+        permissions_service.block_access_to_vendor()
+        return schedule_service.get_schedule_segments_for_project(
+            project_id, self.get_text_parameter("task_type_id") or None
+        )
+
+
 class ProductionTaskTypeScheduleItemsResource(MethodView):
     """
     Resource to retrieve schedule items for given production.

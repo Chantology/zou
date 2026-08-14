@@ -92,6 +92,10 @@ from zou.app.blueprints.crud.schedule_item import (
     ScheduleItemsResource,
     ScheduleItemResource,
 )
+from zou.app.blueprints.crud.schedule_segment import (
+    ScheduleSegmentsResource,
+    ScheduleSegmentResource,
+)
 from zou.app.blueprints.crud.subscription import (
     SubscriptionsResource,
     SubscriptionResource,
@@ -231,6 +235,8 @@ routes = [
     ("/data/search-filter-groups/<instance_id>", SearchFilterGroupResource),
     ("/data/schedule-items", ScheduleItemsResource),
     ("/data/schedule-items/<instance_id>", ScheduleItemResource),
+    ("/data/schedule-segments", ScheduleSegmentsResource),
+    ("/data/schedule-segments/<instance_id>", ScheduleSegmentResource),
     ("/data/news", NewssResource),
     ("/data/news/<instance_id>", NewsResource),
     ("/data/milestones", MilestonesResource),

@@ -377,5 +377,9 @@ class ProductionScheduleVersionNotFoundException(NotFound):
     pass
 
 
+class ScheduleItemNotFoundException(NotFound):
+    pass
+
+
 class BackupFailedException(Exception):
     pass

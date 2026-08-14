@@ -8,6 +8,7 @@ from zou.app.models.entity import Entity
 from zou.app.models.entity_type import EntityType
 from zou.app.models.milestone import Milestone
 from zou.app.models.schedule_item import ScheduleItem
+from zou.app.models.schedule_segment import ScheduleSegment
 from zou.app.models.task import Task, TaskPersonLink
 from zou.app.models.task_type import TaskType
 from zou.app.models.production_schedule_version import (
@@ -28,6 +29,7 @@ from zou.app import db
 
 from zou.app.services.exception import (
     ProductionScheduleVersionNotFoundException,
+    ScheduleItemNotFoundException,
     WrongParameterException,
 )
 
@@ -307,6 +309,77 @@ def get_milestones_for_project(project_id):
     """
     query = Milestone.query.filter_by(project_id=project_id)
     return [milestone.present() for milestone in query.all()]
+
+
+def get_schedule_item(schedule_item_id):
+    """
+    Get schedule item matching given id.
+    """
+    schedule_item = base_service.get_instance(
+        ScheduleItem, schedule_item_id, ScheduleItemNotFoundException
+    )
+    return schedule_item.present()
+
+
+def get_schedule_segments_between(
+    start=None,
+    end=None,
+    task_id=None,
+    schedule_item_id=None,
+    exclude_id=None,
+):
+    """
+    Get all segments of a bar overlapping given start and end date.
+    """
+    query = ScheduleSegment.query
+    if task_id is not None:
+        query = query.filter(ScheduleSegment.task_id == task_id)
+    if schedule_item_id is not None:
+        query = query.filter(
+            ScheduleSegment.schedule_item_id == schedule_item_id
+        )
+
+    # Both bounds are read from the column: writing them the other way
+    # round makes Python fall back to the reflected operator and silently
+    # inverts the interval, which then matches nothing beyond a one day
+    # long segment.
+    if start is not None:
+        query = query.filter(
+            func.cast(start, ScheduleSegment.end_date.type)
+            <= ScheduleSegment.end_date
+        )
+    if end is not None:
+        query = query.filter(
+            func.cast(end, ScheduleSegment.start_date.type)
+            >= ScheduleSegment.start_date
+        )
+
+    if exclude_id is not None:
+        query = query.filter(ScheduleSegment.id != exclude_id)
+
+    return ScheduleSegment.serialize_list(query.all())
+
+
+def get_schedule_segments_for_project(project_id, task_type_id=None):
+    """
+    Return every segment set on the tasks and the schedule items of given
+    project. The schedule needs them all at once to draw its bars.
+    """
+    task_query = ScheduleSegment.query.join(
+        Task, ScheduleSegment.task_id == Task.id
+    ).filter(Task.project_id == project_id)
+    item_query = ScheduleSegment.query.join(
+        ScheduleItem, ScheduleSegment.schedule_item_id == ScheduleItem.id
+    ).filter(ScheduleItem.project_id == project_id)
+    if task_type_id is not None:
+        task_query = task_query.filter(Task.task_type_id == task_type_id)
+        item_query = item_query.filter(
+            ScheduleItem.task_type_id == task_type_id
+        )
+
+    segments = task_query.all() + item_query.all()
+    segments.sort(key=lambda segment: segment.start_date)
+    return ScheduleSegment.serialize_list(segments)
 
 
 def get_production_schedule_version_raw(production_schedule_version_id):

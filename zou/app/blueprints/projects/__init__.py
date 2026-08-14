@@ -26,6 +26,7 @@ from zou.app.blueprints.projects.resources import (
     AllProjectsMetadataDescriptorsReorderResource,
     ProductionMilestonesResource,
     ProductionScheduleItemsResource,
+    ProductionScheduleSegmentsResource,
     ProductionTaskTypeScheduleItemsResource,
     ProductionAssetTypesScheduleItemsResource,
     ProductionEditsScheduleItemsResource,
@@ -138,6 +139,10 @@ routes = [
     (
         "/data/projects/<project_id>/schedule-items/task-types",
         ProductionTaskTypeScheduleItemsResource,
+    ),
+    (
+        "/data/projects/<project_id>/schedule-segments",
+        ProductionScheduleSegmentsResource,
     ),
     (
         "/data/projects/<project_id>/schedule-items/<task_type_id>/asset-types",

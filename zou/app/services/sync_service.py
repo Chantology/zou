@@ -56,6 +56,7 @@ from zou.app.models.production_schedule_version import (
 from zou.app.models.project import Project
 from zou.app.models.project_status import ProjectStatus
 from zou.app.models.schedule_item import ScheduleItem
+from zou.app.models.schedule_segment import ScheduleSegment
 from zou.app.models.subscription import Subscription
 from zou.app.models.search_filter import SearchFilter
 from zou.app.models.search_filter_group import SearchFilterGroup
@@ -122,6 +123,7 @@ event_name_model_map = {
     "sequence": Entity,
     "shot": Entity,
     "schedule-item": ScheduleItem,
+    "schedule-segment": ScheduleSegment,
     "subscription": Subscription,
     "search-filter": SearchFilter,
     "search-filter-group": SearchFilterGroup,
@@ -162,6 +164,7 @@ event_name_model_path_map = {
     "sequence": "sequences",
     "shot": "shots",
     "schedule-item": "schedule-items",
+    "schedule-segment": "schedule-segments",
     "search-filter": "search-filters",
     "search-filter-group": "search-filter-groups",
     "subscription": "subscriptions",
@@ -188,6 +191,7 @@ project_events = [
     "attachment-file",
     "metadata-descriptor",
     "schedule-item",
+    "schedule-segment",
     "subscription",
     "notification",
     "entity-link",
