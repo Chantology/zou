@@ -1,12 +1,15 @@
 import os
+import unicodedata
+from urllib.parse import quote
 import orjson as json
 
-from flask import request, current_app
+from flask import request, current_app, Response
 from flask import send_file as flask_send_file
 from flask.views import MethodView
 from flask_jwt_extended import jwt_required
 from flask_fs.errors import FileNotFound
 from werkzeug.exceptions import NotFound
+from werkzeug.wsgi import FileWrapper as WerkzeugFileWrapper
 
 from zou.app import config
 from zou.app.mixin import ArgsMixin
@@ -30,9 +33,7 @@ from zou.app.services import (
     preview_files_service,
     tasks_service,
     permissions_service,
-    user_service,
 )
-from zou.app.stores import queue_store
 from zou.utils import movie
 from zou.app.utils import (
     fields,
@@ -118,20 +119,148 @@ def send_standard_file(
     )
 
 
-def send_movie_file(
-    preview_file_id, as_attachment=False, lowdef=False, last_modified=None
+class SeekableFileWrapper(WerkzeugFileWrapper):
+    """
+    Werkzeug's file wrapper (it seeks, gunicorn's does not) with the
+    attribute gunicorn's sendfile path reads on a response that is an
+    instance of the wrapper found in wsgi.file_wrapper.
+    """
+
+    @property
+    def filelike(self):
+        return self.file
+
+
+def get_single_byte_range():
+    """
+    The request's Range header when it asks for one byte range, the way
+    a movie player does. None otherwise: a multipart range gets the whole
+    file, like no range at all.
+    """
+    byte_range = request.range
+    if (
+        byte_range is not None
+        and byte_range.units == "bytes"
+        and len(byte_range.ranges) == 1
+    ):
+        return byte_range.to_header()
+    return None
+
+
+def stream_movie_from_storage(
+    prefix,
+    preview_file_id,
+    range_header,
+    mimetype,
+    as_attachment,
+    download_name,
+    max_age,
 ):
-    folder = "previews"
-    if lowdef:
-        folder = "lowdef"
+    """
+    Serve a movie that is not in the local cache yet straight from the
+    object storage, so the first play does not wait for the whole file to
+    land on the disk.
+    """
+    content_length, content_range, generator = file_store.read_movie_range(
+        prefix, preview_file_id, range_header
+    )
+    response = Response(
+        generator,
+        status=206 if content_range else 200,
+        mimetype=mimetype,
+        direct_passthrough=True,
+    )
+    response.headers["Accept-Ranges"] = "bytes"
+    response.headers["Content-Length"] = content_length
+    if content_range:
+        response.headers["Content-Range"] = content_range
+    if as_attachment:
+        # Same folding as werkzeug's send_file on the warm path: a raw
+        # non-ASCII name is an invalid header value for gunicorn.
+        try:
+            download_name.encode("ascii")
+            names = {"filename": download_name}
+        except UnicodeEncodeError:
+            simple = unicodedata.normalize("NFKD", download_name)
+            names = {
+                "filename": simple.encode("ascii", "ignore").decode("ascii"),
+                "filename*": "UTF-8''"
+                + quote(download_name, safe="!#$&+-.^_`|~"),
+            }
+        response.headers.set("Content-Disposition", "attachment", **names)
+    response.cache_control.private = True
+    response.cache_control.max_age = max_age
+    return response
+
+
+def send_movie_file(
+    preview_file_id,
+    as_attachment=False,
+    lowdef=False,
+    last_modified=None,
+    preview_file=None,
+):
+    """
+    Send the requested movie version, falling back on the other stored ones.
+    A setup skipping part of the normalization (SKIP_NORMALIZATION_FULL,
+    SKIP_NORMALIZATION_HIGHDEF) stores a single version, and the uploaded
+    source is the last resort. Note that the source is served as video/mp4
+    whatever its real container, and carries no faststart flag.
+
+    The versions actually stored come first: a missing object costs a
+    round trip on the object storage, and a movie player asks for the same
+    file once per range. They are read from the access lookup the route
+    already did (`preview_file`). A preview file that predates the record
+    is served in the default order, and the record is probed and written
+    back after the response starts: the probe costs one round trip per
+    version, more than the movie read itself.
+    """
+    if preview_file is None:
+        preview_file = files_service.get_preview_file_for_access(
+            preview_file_id
+        )
+    recorded_prefixes = preview_file["movie_prefixes"]
+    prefixes = files_service.get_movie_prefixes(
+        recorded_prefixes or [], lowdef
+    )
+    for prefix in prefixes:
+        try:
+            response = send_storage_file(
+                file_store.get_local_movie_path,
+                file_store.open_movie,
+                prefix,
+                preview_file_id,
+                "mp4",
+                mimetype="video/mp4",
+                as_attachment=as_attachment,
+                last_modified=last_modified,
+                stream_cold=True,
+            )
+        except FileNotFound:
+            if prefix == prefixes[-1]:
+                raise
+            continue
+        if recorded_prefixes is None or prefix != prefixes[0]:
+            # No record yet, or one lagging behind the storage (a version
+            # removed, a row imported from another instance).
+            files_service.record_movie_prefixes_later(
+                preview_file_id, prefix, recorded_prefixes
+            )
+        return response
+
+
+def send_source_movie_file(preview_file_id, last_modified=None):
+    """
+    Send the uploaded source movie, and only that one: the sync between two
+    instances has to tell it apart from the encoded versions.
+    """
     return send_storage_file(
         file_store.get_local_movie_path,
         file_store.open_movie,
-        folder,
+        "source",
         preview_file_id,
         "mp4",
         mimetype="video/mp4",
-        as_attachment=as_attachment,
         last_modified=last_modified,
     )
 
@@ -174,10 +303,16 @@ def send_storage_file(
     max_age=config.CLIENT_CACHE_MAX_AGE,
     download_name="",
     last_modified=None,
+    stream_cold=False,
 ):
     """
     Send file from storage. If it's not a local storage, cache the file in
     a temporary folder before sending it. It accepts conditional headers.
+
+    With ``stream_cold``, a movie missing from that cache is streamed from
+    the storage right away while a background download fills the cache.
+    Only a ranged request (a player) is served that way: a whole-file
+    request would cost two full storage reads and lose the validators.
     """
     file_size = None
     try:
@@ -196,6 +331,42 @@ def send_storage_file(
                 file_size = preview_file["file_size"]
     except NotFound:
         pass
+    if as_attachment:
+        download_name = names_service.get_preview_file_name(preview_file_id)
+
+    # Werkzeug never starts the body generator of a HEAD response: a
+    # storage stream opened for it would only be closed by refcount.
+    range_header = (
+        get_single_byte_range()
+        if stream_cold and request.method != "HEAD"
+        else None
+    )
+    if range_header and file_store.can_stream_movie_ranges():
+        cache_path = fs.get_cache_file_path(
+            config, prefix, preview_file_id, extension
+        )
+        if fs.is_invalid_file(cache_path, file_size):
+            # No ETag or Last-Modified on purpose: a browser that got one
+            # here would send it back as If-Range once the cache is warm,
+            # where send_file computes a different validator and would
+            # answer the whole file. The bytes are the same either way.
+            response = stream_movie_from_storage(
+                prefix,
+                preview_file_id,
+                range_header,
+                mimetype,
+                as_attachment,
+                download_name,
+                max_age,
+            )
+            # Only once the range read proved the storage holds this
+            # prefix: the fallback tries prefixes it may not, and a fill
+            # started for a missing one is a wasted download.
+            fs.fill_cache_in_background(
+                cache_path, open_file, prefix, preview_file_id
+            )
+            return response
+
     file_path = fs.get_file_path_and_file(
         config,
         get_local_path,
@@ -206,9 +377,14 @@ def send_storage_file(
         file_size=file_size,
     )
 
-    if as_attachment:
-        download_name = names_service.get_preview_file_name(preview_file_id)
-
+    # send_file wraps the file in whatever the WSGI server put in
+    # wsgi.file_wrapper, and Werkzeug's range wrapper only seeks when that
+    # wrapper has a seekable() method. gunicorn's FileWrapper has none, so
+    # every Range request read and discarded the file from byte 0 up to the
+    # range: linear in the offset, seconds per request at the end of a long
+    # movie, blocking the worker. Swap in a seekable wrapper for this
+    # response.
+    request.environ["wsgi.file_wrapper"] = SeekableFileWrapper
     try:
         response = flask_send_file(
             file_path,
@@ -301,26 +477,20 @@ class BaseNewPreviewFilePicture:
                 f"storage ({written_size}/{expected_size} bytes); the "
                 f"temporary disk may be full."
             )
-        save_source_file = config.PREVIEW_SAVE_SOURCE_FILE
-        if normalize and config.ENABLE_JOB_QUEUE and not no_job:
-            queue_store.job_queue.enqueue(
-                preview_files_service.prepare_and_store_movie,
-                args=(
-                    preview_file_id,
-                    uploaded_movie_path,
-                    True,
-                    save_source_file,
-                ),
-                job_timeout=int(config.JOB_QUEUE_TIMEOUT),
-                on_failure=preview_files_service.mark_broken_on_job_failure,
-            )
-        else:
-            preview_files_service.prepare_and_store_movie(
-                preview_file_id,
-                uploaded_movie_path,
-                normalize=normalize,
-                add_source_to_file_store=save_source_file,
-            )
+        # The remote worker reads the movie from the object storage, and
+        # without normalization that source is the only movie stored: it has
+        # to be uploaded whatever PREVIEW_SAVE_SOURCE_FILE says.
+        save_source_file = (
+            config.PREVIEW_SAVE_SOURCE_FILE
+            or preview_files_service.is_remote_normalization_enabled()
+        )
+        preview_files_service.dispatch_movie_processing(
+            preview_file_id,
+            uploaded_movie_path,
+            normalize=normalize,
+            add_source_to_file_store=save_source_file,
+            no_job=no_job,
+        )
         return preview_file_id
 
     def save_file_preview(self, instance_id, uploaded_file, extension):
@@ -756,7 +926,9 @@ class PreviewFileMovieResource(BasePreviewFileResource):
         """
         Get preview movie
         ---
-        description: Download a movie preview file.
+        description: Download a movie preview file. Falls back to the low
+          definition version then to the uploaded source when the full
+          quality one was not produced.
         tags:
           - Previews
         parameters:
@@ -781,7 +953,9 @@ class PreviewFileMovieResource(BasePreviewFileResource):
 
         try:
             return send_movie_file(
-                instance_id, last_modified=self.last_modified
+                instance_id,
+                last_modified=self.last_modified,
+                preview_file=self.preview_file,
             )
         except FileNotFound:
             if config.LOG_FILE_NOT_FOUND:
@@ -801,8 +975,9 @@ class PreviewFileLowMovieResource(BasePreviewFileResource):
         """
         Get preview lowdef movie
         ---
-        description: Download a low definition movie preview file. Falls back to
-          full quality if lowdef version is not available.
+        description: Download a low definition movie preview file. Falls back
+          to full quality then to the uploaded source if the low definition
+          version is not available.
         tags:
           - Previews
         parameters:
@@ -826,20 +1001,67 @@ class PreviewFileLowMovieResource(BasePreviewFileResource):
         self.is_allowed(instance_id)
 
         try:
+            # send_movie_file already falls back on the full quality version
+            # then on the source.
             return send_movie_file(
-                instance_id, lowdef=True, last_modified=self.last_modified
+                instance_id,
+                lowdef=True,
+                last_modified=self.last_modified,
+                preview_file=self.preview_file,
             )
         except FileNotFound:
-            try:
-                return send_movie_file(
-                    instance_id, last_modified=self.last_modified
+            if config.LOG_FILE_NOT_FOUND:
+                current_app.logger.error(
+                    f"Movie file was not found for: {instance_id}"
                 )
-            except FileNotFound:
-                if config.LOG_FILE_NOT_FOUND:
-                    current_app.logger.error(
-                        f"Movie file was not found for: {instance_id}"
-                    )
-                raise PreviewFileNotFoundException
+            raise PreviewFileNotFoundException
+
+
+class PreviewFileSourceMovieResource(BasePreviewFileResource):
+    """
+    Allow to download the source movie of a preview.
+    """
+
+    @jwt_required()
+    def get(self, instance_id):
+        """
+        Get preview source movie
+        ---
+        description: Download the movie as it was uploaded, without any
+          normalization. Answers a 404 when the source was not kept. Mainly
+          meant for the synchronisation between two instances.
+        tags:
+          - Previews
+        parameters:
+          - in: path
+            name: instance_id
+            required: true
+            schema:
+              type: string
+              format: uuid
+            description: Preview file unique identifier
+            example: a24a6ea4-ce75-4665-a070-57453082c25
+        responses:
+          200:
+            description: Source movie preview downloaded
+            content:
+              video/mp4:
+                schema:
+                  type: string
+                  format: binary
+        """
+        self.is_allowed(instance_id)
+
+        try:
+            return send_source_movie_file(
+                instance_id, last_modified=self.last_modified
+            )
+        except FileNotFound:
+            if config.LOG_FILE_NOT_FOUND:
+                current_app.logger.error(
+                    f"Source movie file was not found for: {instance_id}"
+                )
+            raise PreviewFileNotFoundException
 
 
 class PreviewFileMovieDownloadResource(BasePreviewFileResource):
@@ -880,6 +1102,7 @@ class PreviewFileMovieDownloadResource(BasePreviewFileResource):
                 instance_id,
                 as_attachment=True,
                 last_modified=self.last_modified,
+                preview_file=self.preview_file,
             )
         except FileNotFound:
             if config.LOG_FILE_NOT_FOUND:
@@ -1020,6 +1243,7 @@ class PreviewFileDownloadResource(BasePreviewFileResource):
                     instance_id,
                     as_attachment=True,
                     last_modified=self.last_modified,
+                    preview_file=self.preview_file,
                 )
             else:
                 return send_standard_file(
@@ -1191,6 +1415,41 @@ class PreviewFileThumbnailResource(BasePreviewFileThumbnailResource):
 class PreviewFileTileResource(BasePreviewPictureResource):
     def __init__(self):
         BasePreviewPictureResource.__init__(self, "tiles")
+
+    @jwt_required()
+    def get(self, instance_id):
+        """
+        Get the tile sheet of a movie preview
+        ---
+        description: Download the tile sheet of a movie preview file. A
+                     ready movie without one gets it built in the
+                     background for the next request.
+        tags:
+          - Previews
+        parameters:
+          - in: path
+            name: instance_id
+            required: true
+            schema:
+              type: string
+              format: uuid
+            description: Preview file unique identifier
+        responses:
+          200:
+            description: Tile sheet downloaded
+            content:
+              image/png:
+                schema:
+                  type: string
+                  format: binary
+          404:
+            description: No tile sheet stored for this preview file
+        """
+        try:
+            return super().get(instance_id)
+        except PreviewFileNotFoundException:
+            preview_files_service.generate_tile_later(instance_id)
+            raise
 
 
 class PreviewFilePreviewResource(BasePreviewPictureResource):
@@ -1389,10 +1648,6 @@ class PersonThumbnailResource(BaseThumbnailResource):
         )
 
 
-class CreatePersonThumbnailResource(PersonThumbnailResource):
-    pass
-
-
 class OrganisationThumbnailResource(BaseThumbnailResource):
 
     def __init__(self):
@@ -1406,10 +1661,6 @@ class OrganisationThumbnailResource(BaseThumbnailResource):
 
     def is_exist(self, organisation_id):
         self.model = persons_service.get_organisation()
-
-
-class CreateOrganisationThumbnailResource(OrganisationThumbnailResource):
-    pass
 
 
 class ProjectThumbnailResource(BaseThumbnailResource):
@@ -1427,11 +1678,31 @@ class ProjectThumbnailResource(BaseThumbnailResource):
         if not permissions.has_manager_permissions():
             permissions_service.check_project_access(instance_id)
 
-
-class CreateProjectThumbnailResource(ProjectThumbnailResource):
-
     def check_allowed_to_post(self, instance_id):
         return permissions_service.check_manager_project_access(instance_id)
+
+
+class ReadOnlyProjectThumbnailResource(ProjectThumbnailResource):
+    """
+    Display url of the project thumbnail. Uploads go to the path without
+    extension, so this one serves reads only and the upload permission is
+    described in a single place. A post answers 405 with a pointer instead
+    of falling through the routing to a misleading 404.
+    """
+
+    # flasgger only accepts a set here, a list makes /openapi.json crash
+    methods = {"GET", "POST"}
+
+    @jwt_required()
+    def post(self, instance_id):
+        """
+        Uploads are not allowed on the display url.
+        """
+        return {
+            "error": True,
+            "message": "Upload project thumbnails on the url without "
+            "extension: /pictures/thumbnails/projects/<project_id>.",
+        }, 405
 
 
 class SetMainPreviewResource(MethodView, ArgsMixin):

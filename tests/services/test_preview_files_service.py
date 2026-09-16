@@ -373,6 +373,416 @@ class PreviewFileServiceTestCase(PreviewFileTestCase):
             if os.path.exists(p):
                 os.remove(p)
 
+    @patch("zou.app.services.preview_files_service.movie.generate_tile")
+    @patch("zou.app.services.preview_files_service.save_variants")
+    @patch(
+        "zou.app.services.preview_files_service.thumbnail_utils"
+        ".turn_into_thumbnail"
+    )
+    @patch("zou.app.services.preview_files_service.movie.generate_thumbnail")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_duration")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_size")
+    @patch("zou.app.services.preview_files_service.movie.normalize_movie")
+    @patch("zou.app.services.preview_files_service.file_store.add_movie")
+    def test_prepare_and_store_movie_skip_normalization_full(
+        self,
+        mock_add_movie,
+        mock_normalize,
+        mock_size,
+        mock_duration,
+        mock_gen_thumbnail,
+        mock_turn_thumbnail,
+        mock_save_variants,
+        mock_gen_tile,
+    ):
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        preview_file_id = str(preview_file.id)
+        uploaded_path = self._write_temp_movie()
+        mock_size.return_value = (1920, 1080)
+        mock_duration.return_value = 10.0
+        mock_gen_thumbnail.return_value = uploaded_path
+        mock_gen_tile.return_value = uploaded_path
+
+        with patch.object(
+            preview_files_service.config, "SKIP_NORMALIZATION_FULL", True
+        ):
+            preview_files_service.prepare_and_store_movie(
+                preview_file_id,
+                uploaded_path,
+                normalize=True,
+                add_source_to_file_store=False,
+            )
+
+        mock_normalize.assert_not_called()
+        # Stored once: the low def route falls back on the full quality one.
+        self.assertEqual(
+            [
+                (call.args[0], call.args[2])
+                for call in mock_add_movie.mock_calls
+            ],
+            [("previews", uploaded_path)],
+        )
+        persisted = files_service.get_preview_file(preview_file_id)
+        self.assertEqual(persisted["status"], "ready")
+
+    @patch("zou.app.services.preview_files_service.movie.generate_tile")
+    @patch("zou.app.services.preview_files_service.save_variants")
+    @patch(
+        "zou.app.services.preview_files_service.thumbnail_utils"
+        ".turn_into_thumbnail"
+    )
+    @patch("zou.app.services.preview_files_service.movie.generate_thumbnail")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_duration")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_size")
+    @patch("zou.app.services.preview_files_service.movie.normalize_movie")
+    @patch("zou.app.services.preview_files_service.file_store.add_movie")
+    def test_prepare_and_store_movie_skip_full_keeps_a_single_copy(
+        self,
+        mock_add_movie,
+        mock_normalize,
+        mock_size,
+        mock_duration,
+        mock_gen_thumbnail,
+        mock_turn_thumbnail,
+        mock_save_variants,
+        mock_gen_tile,
+    ):
+        """
+        The uploaded movie already went to the storage as the source, and
+        the movie routes fall back on it: a copy under `previews` would be
+        the same bytes twice.
+        """
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        preview_file_id = str(preview_file.id)
+        uploaded_path = self._write_temp_movie()
+        mock_size.return_value = (1920, 1080)
+        mock_duration.return_value = 10.0
+        mock_gen_thumbnail.return_value = uploaded_path
+        mock_gen_tile.return_value = uploaded_path
+
+        with patch.object(
+            preview_files_service.config, "SKIP_NORMALIZATION_FULL", True
+        ):
+            preview_files_service.prepare_and_store_movie(
+                preview_file_id,
+                uploaded_path,
+                normalize=True,
+                add_source_to_file_store=True,
+            )
+
+        mock_normalize.assert_not_called()
+        self.assertEqual(
+            [
+                (call.args[0], call.args[2])
+                for call in mock_add_movie.mock_calls
+            ],
+            [("source", uploaded_path)],
+        )
+        persisted = files_service.get_preview_file(preview_file_id)
+        self.assertEqual(persisted["status"], "ready")
+
+    @patch("zou.app.services.preview_files_service.movie.generate_tile")
+    @patch("zou.app.services.preview_files_service.save_variants")
+    @patch(
+        "zou.app.services.preview_files_service.thumbnail_utils"
+        ".turn_into_thumbnail"
+    )
+    @patch("zou.app.services.preview_files_service.movie.generate_thumbnail")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_duration")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_size")
+    @patch("zou.app.services.preview_files_service.movie.normalize_movie")
+    @patch("zou.app.services.preview_files_service.file_store.add_movie")
+    def test_prepare_and_store_movie_skip_normalization_highdef(
+        self,
+        mock_add_movie,
+        mock_normalize,
+        mock_size,
+        mock_duration,
+        mock_gen_thumbnail,
+        mock_turn_thumbnail,
+        mock_save_variants,
+        mock_gen_tile,
+    ):
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        preview_file_id = str(preview_file.id)
+        uploaded_path = self._write_temp_movie()
+        norm_low_path = self._write_temp_movie()
+
+        mock_normalize.return_value = None, norm_low_path, None
+        mock_size.return_value = (1280, 720)
+        mock_duration.return_value = 10.0
+        mock_gen_thumbnail.return_value = norm_low_path
+        mock_gen_tile.return_value = norm_low_path
+
+        with patch.object(
+            preview_files_service.config, "SKIP_NORMALIZATION_HIGHDEF", True
+        ):
+            preview_files_service.prepare_and_store_movie(
+                preview_file_id,
+                uploaded_path,
+                normalize=True,
+                add_source_to_file_store=False,
+            )
+
+        self.assertTrue(mock_normalize.call_args.kwargs["skip_high_def"])
+        # Only the low def movie is stored, the thumbnails are built from it.
+        self.assertEqual(
+            [
+                (call.args[0], call.args[2])
+                for call in mock_add_movie.mock_calls
+            ],
+            [("lowdef", norm_low_path)],
+        )
+        mock_gen_thumbnail.assert_called_once_with(norm_low_path)
+        persisted = files_service.get_preview_file(preview_file_id)
+        self.assertEqual(persisted["status"], "ready")
+        self.assertEqual(persisted["width"], 1280)
+
+    @patch("zou.app.services.preview_files_service.movie.generate_thumbnail")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_duration")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_size")
+    @patch(
+        "zou.app.services.preview_files_service._run_remote_normalize_movie"
+    )
+    @patch(
+        "zou.app.services.preview_files_service"
+        ".is_remote_normalization_enabled"
+    )
+    @patch("zou.app.services.preview_files_service.file_store.add_movie")
+    def test_prepare_and_store_movie_remote_job_runs_without_normalization(
+        self,
+        mock_add_movie,
+        mock_is_remote,
+        mock_run_remote,
+        mock_size,
+        mock_duration,
+        mock_gen_thumbnail,
+    ):
+        """
+        The remote job builds the thumbnails and the tile, so it has to be
+        dispatched even when nothing is normalized.
+        """
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        preview_file_id = str(preview_file.id)
+        uploaded_path = self._write_temp_movie()
+        mock_is_remote.return_value = True
+        mock_run_remote.return_value = True
+        mock_size.return_value = (1920, 1080)
+        mock_duration.return_value = 10.0
+
+        with patch.object(
+            preview_files_service.config, "SKIP_NORMALIZATION_FULL", True
+        ):
+            preview_files_service.prepare_and_store_movie(
+                preview_file_id,
+                uploaded_path,
+                normalize=True,
+                add_source_to_file_store=False,
+            )
+
+        self.assertTrue(mock_run_remote.call_args.kwargs["skip_normalization"])
+        # No movie stored: the source uploaded for the job is the only one,
+        # and the thumbnails are the remote job's business.
+        mock_add_movie.assert_not_called()
+        mock_gen_thumbnail.assert_not_called()
+        persisted = files_service.get_preview_file(preview_file_id)
+        self.assertEqual(persisted["status"], "ready")
+        self.assertEqual(persisted["width"], 1920)
+        self.assertEqual(persisted["file_size"], 1024)
+
+    @patch("zou.app.services.preview_files_service.movie.get_movie_duration")
+    @patch("zou.app.services.preview_files_service.movie.get_movie_size")
+    @patch("zou.app.services.preview_files_service.fs.get_file_path_and_file")
+    @patch(
+        "zou.app.services.preview_files_service._run_remote_normalize_movie"
+    )
+    @patch(
+        "zou.app.services.preview_files_service"
+        ".is_remote_normalization_enabled"
+    )
+    def test_prepare_and_store_movie_remote_job_records_what_it_stored(
+        self,
+        mock_is_remote,
+        mock_run_remote,
+        mock_get_file,
+        mock_size,
+        mock_duration,
+    ):
+        """
+        A runner that predates skip_high_def uploads both encoded versions
+        whatever the flag: the record comes from the storage, not from
+        the flags.
+        """
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        preview_file_id = str(preview_file.id)
+        uploaded_path = self._write_temp_movie()
+        mock_is_remote.return_value = True
+        mock_run_remote.return_value = True
+        mock_get_file.return_value = self._write_temp_movie()
+        mock_size.return_value = (1280, 720)
+        mock_duration.return_value = 10.0
+
+        with patch.object(
+            preview_files_service.config, "SKIP_NORMALIZATION_HIGHDEF", True
+        ), patch.object(
+            preview_files_service.file_store,
+            "exists_movie",
+            side_effect=lambda prefix, _id: prefix in ("previews", "lowdef"),
+        ):
+            preview_files_service.prepare_and_store_movie(
+                preview_file_id,
+                uploaded_path,
+                normalize=True,
+                add_source_to_file_store=False,
+            )
+
+        persisted = files_service.get_preview_file(preview_file_id)
+        self.assertEqual(persisted["status"], "ready")
+        self.assertEqual(
+            persisted["data"][files_service.MOVIE_PREFIXES_KEY],
+            ["previews", "lowdef"],
+        )
+
+    @patch(
+        "zou.app.services.preview_files_service._run_remote_normalize_movie"
+    )
+    def test_remote_encode_does_not_read_a_stale_cache_entry(
+        self, mock_run_remote
+    ):
+        """
+        The encoded movie is fetched back through the movie routes' cache
+        path. A copy of a previous encoding sitting there (the movie was
+        played on this host, then renormalized) must not short-circuit
+        the download: the metadata would describe the old file.
+        """
+        from zou.app import config
+        from zou.app.utils import fs
+
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        preview_file_id = str(preview_file.id)
+        mock_run_remote.return_value = True
+        cache_path = fs.get_cache_file_path(
+            config, "previews", preview_file_id, "mp4"
+        )
+        with open(cache_path, "wb") as cache_file:
+            cache_file.write(b"old encoding")
+        self.addCleanup(fs.rm_file, cache_path)
+
+        with patch.object(config, "FS_BACKEND", "s3"), patch.object(
+            file_store,
+            "open_movie",
+            side_effect=lambda prefix, _id: iter([b"new encoding"]),
+        ):
+            temp_files = []
+            movie_path = preview_files_service._encode_on_remote_worker(
+                preview_file_id,
+                "/tmp/upload.mp4",
+                25,
+                0,
+                0,
+                True,
+                False,
+                temp_files,
+            )
+
+        with open(movie_path, "rb") as movie_file:
+            self.assertEqual(movie_file.read(), b"new encoding")
+        # The worker may not be a web host: the copy goes with the other
+        # temporary files instead of piling up in its TMP_DIR.
+        self.assertEqual(temp_files, [movie_path])
+
+    @patch("zou.app.services.preview_files_service._process_movie")
+    def test_prepare_and_store_movie_lets_the_job_timeout_through(
+        self, mock_process
+    ):
+        """
+        rq raises its timeout inside the job: swallowed, the job counts as
+        successful, never reaches the failed registry, and the failure
+        callback that marks the preview file as broken never runs.
+        """
+        from rq.timeouts import JobTimeoutException
+
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        uploaded_path = self._write_temp_movie()
+        mock_process.side_effect = JobTimeoutException()
+
+        with self.assertRaises(JobTimeoutException):
+            preview_files_service.prepare_and_store_movie(
+                str(preview_file.id), uploaded_path, normalize=True
+            )
+        self.assertFalse(os.path.exists(uploaded_path))
+
+    @patch(
+        "zou.app.services.preview_files_service._run_remote_normalize_movie"
+    )
+    def test_remote_encode_keeps_the_stored_movie_on_a_local_backend(
+        self, mock_run_remote
+    ):
+        """
+        On a local backend the path fetched back is the stored movie
+        itself, not a copy: it must not go with the temporary files.
+        """
+        preview_file = self.generate_fixture_preview_file(status="processing")
+        preview_file_id = str(preview_file.id)
+        mock_run_remote.return_value = True
+        stored_path = file_store.get_local_movie_path(
+            "previews", preview_file_id
+        )
+        os.makedirs(os.path.dirname(stored_path), exist_ok=True)
+        with open(stored_path, "wb") as stored:
+            stored.write(b"encoded")
+
+        temp_files = []
+        movie_path = preview_files_service._encode_on_remote_worker(
+            preview_file_id,
+            "/tmp/upload.mp4",
+            25,
+            0,
+            0,
+            True,
+            False,
+            temp_files,
+        )
+
+        self.assertEqual(movie_path, stored_path)
+        self.assertEqual(temp_files, [])
+
+    def test_copying_a_movie_preview_carries_the_source_along(self):
+        """
+        A preview file whose normalization was skipped only holds a source
+        movie: leaving that prefix out would copy a preview with no movie.
+        """
+        original = self.generate_fixture_preview_file(name="original")
+        target = self.generate_fixture_preview_file(name="target")
+        original_id = str(original.id)
+        target_id = str(target.id)
+        source_path = file_store.get_local_movie_path("source", original_id)
+        os.makedirs(os.path.dirname(source_path), exist_ok=True)
+        with open(source_path, "wb") as movie_file:
+            movie_file.write(b"\x00" * 512)
+
+        preview_files_service.copy_preview_file_in_another_one(
+            original_id, target_id
+        )
+
+        self.assertTrue(
+            os.path.exists(
+                file_store.get_local_movie_path("source", target_id)
+            )
+        )
+
+    def _write_temp_movie(self, size=1024):
+        """
+        Create a non-empty temp file standing in for a movie.
+        """
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+        tmp.write(b"\x00" * size)
+        tmp.close()
+        self.addCleanup(
+            lambda: os.path.exists(tmp.name) and os.remove(tmp.name)
+        )
+        return tmp.name
+
     @patch("zou.app.services.preview_files_service.movie.generate_thumbnail")
     @patch("zou.app.services.preview_files_service.movie.get_movie_duration")
     @patch("zou.app.services.preview_files_service.movie.get_movie_size")

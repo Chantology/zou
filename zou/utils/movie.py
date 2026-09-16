@@ -1,12 +1,14 @@
-from collections import namedtuple
 import contextlib
 import logging
-import os
 import math
+import os
 import shutil
 import subprocess
 import tempfile
 import uuid
+
+from collections import namedtuple
+from fractions import Fraction
 
 import ffmpeg
 
@@ -180,7 +182,12 @@ def get_movie_fps(movie_path=None, video_track=None):
         video_track = get_video_track(movie_path, "get_movie_fps")
     fps = 25
     if video_track is not None:
-        fps = float(video_track["r_frame_rate"].split("/")[0])
+        # ffprobe reports "0/0" for streams without reliable timing
+        # (attached cover art for instance): keep the default then.
+        try:
+            fps = float(Fraction(video_track["r_frame_rate"]))
+        except (ValueError, ZeroDivisionError):
+            pass
     return fps
 
 
@@ -255,15 +262,21 @@ def normalize_encoding(
         raise (e)
 
 
-def normalize_movie(movie_path, fps, width, height):
+def normalize_movie(movie_path, fps, width, height, skip_high_def=False):
     """
     Normalize movie using resolution, width and height given in parameter.
-    Generates a high def movie and a low def movie.
+    Generates a high def movie and a low def movie. When skip_high_def is
+    True, only the low def movie is generated and the returned high def path
+    is None.
     """
     file_source_name = os.path.basename(movie_path)
     unique_suffix = uuid.uuid4().hex
     file_target_name = f"{file_source_name[:-8]}_{unique_suffix}.mp4"
-    file_target_path = os.path.join(tempfile.gettempdir(), file_target_name)
+    file_target_path = (
+        None
+        if skip_high_def
+        else os.path.join(tempfile.gettempdir(), file_target_name)
+    )
     low_file_target_name = f"{file_source_name[:-8]}_{unique_suffix}_low.mp4"
     low_file_target_path = os.path.join(
         tempfile.gettempdir(), low_file_target_name
@@ -290,16 +303,19 @@ def normalize_movie(movie_path, fps, width, height):
             err = None
 
     # High def version
-    normalize_encoding(
-        movie_path,
-        "Compute high def version",
-        file_target_path,
-        fps,
-        "28M",
-        width,
-        height,
-        keyframes=2,
-    )
+    if skip_high_def:
+        logger.info("Skip high def version")
+    else:
+        normalize_encoding(
+            movie_path,
+            "Compute high def version",
+            file_target_path,
+            fps,
+            "28M",
+            width,
+            height,
+            keyframes=2,
+        )
 
     # Low def version
     low_width = 1280
@@ -479,19 +495,40 @@ def concat_demuxer(in_files, output_path, *args):
     with any container formats.
     """
 
+    first_layout = None
     for input_path in in_files:
         try:
             info = ffmpeg.probe(input_path)
         except ffmpeg._run.Error as e:
             log_ffmpeg_error(e, "concat_demuxer")
             raise (e)
-        streams = info["streams"]
+        # The concat demuxer matches streams across files by index, so
+        # every file must share the stream layout of the first one.
+        codec_types = [stream["codec_type"] for stream in info["streams"]]
+        if first_layout is None:
+            first_layout = codec_types
+        elif codec_types != first_layout:
+            return {
+                "success": False,
+                "message": (
+                    f"{input_path} has a stream layout ({codec_types}) "
+                    f"different from the first file's ({first_layout})"
+                ),
+            }
+        # NLE exports often carry a timecode (tmcd) or other data stream
+        # next to video and audio. The output only maps video and audio,
+        # so ignore anything else instead of rejecting the file.
+        streams = [
+            stream
+            for stream in info["streams"]
+            if stream["codec_type"] in ("video", "audio")
+        ]
         if len(streams) != 2:
             return {
                 "success": False,
                 "message": (
-                    f"{input_path} has an unexpected stream number "
-                    f"({len(streams)})"
+                    f"{input_path} has an unexpected video/audio stream "
+                    f"number ({len(streams)})"
                 ),
             }
 
@@ -502,15 +539,6 @@ def concat_demuxer(in_files, output_path, *args):
                 "message": (
                     f"{input_path} has unexpected stream type ({stream_infos})"
                 ),
-            }
-
-        video_index = [
-            x["index"] for x in streams if x["codec_type"] == "video"
-        ][0]
-        if video_index != 0:
-            return {
-                "success": False,
-                "message": f"{input_path} has an unexpected stream order",
             }
 
     with tempfile.NamedTemporaryFile(mode="w") as temp:

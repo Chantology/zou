@@ -1,5 +1,7 @@
 import pytest
 
+from unittest.mock import patch
+
 from sqlalchemy import event
 
 from tests.base import ApiDBTestCase
@@ -18,6 +20,7 @@ from zou.app.services.exception import (
     SoftwareNotFoundException,
     WorkingFileNotFoundException,
 )
+from zou.app.stores import file_store
 from zou.app.utils import cache, fields
 
 
@@ -197,7 +200,8 @@ class LookupTestCase(FilesTestCase):
             event.remove(db.engine, "before_cursor_execute", record)
 
         self.assertEqual(
-            set(result.keys()), {"id", "task_id", "updated_at", "extension"}
+            set(result.keys()),
+            {"id", "task_id", "updated_at", "extension", "movie_prefixes"},
         )
         self.assertEqual(result["id"], preview_file_id)
         self.assertEqual(result["task_id"], task_id)
@@ -866,4 +870,112 @@ class PreviewBackgroundFileTestCase(FilesTestCase):
             files_service.get_preview_background_file(str(new_default.id))[
                 "is_default"
             ]
+        )
+
+
+class MoviePrefixesTestCase(ApiDBTestCase):
+    """
+    The movie routes probe up to three storage prefixes. Resolving the
+    one actually stored spares a round trip per missing object, paid on
+    every range request a player sends.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.generate_fixture_preview_file()
+        self.preview_file_id = str(self.preview_file.id)
+
+    def stored_under(self, stored_prefix):
+        return patch.object(
+            file_store,
+            "exists_movie",
+            side_effect=lambda prefix, _id: prefix == stored_prefix,
+        )
+
+    def test_stored_prefix_comes_first(self):
+        self.assertEqual(
+            files_service.get_movie_prefixes(["lowdef"], lowdef=True),
+            ["lowdef", "previews", "source"],
+        )
+        self.assertEqual(
+            files_service.get_movie_prefixes(["source"], lowdef=True),
+            ["source", "lowdef", "previews"],
+        )
+        self.assertEqual(
+            files_service.get_movie_prefixes(["source"], lowdef=False),
+            ["source", "previews", "lowdef"],
+        )
+
+    def test_recorded_prefixes_keep_the_route_order(self):
+        stored = ["previews", "lowdef"]
+        self.assertEqual(
+            files_service.get_movie_prefixes(stored, lowdef=True),
+            ["lowdef", "previews", "source"],
+        )
+        self.assertEqual(
+            files_service.get_movie_prefixes(stored, lowdef=False),
+            ["previews", "lowdef", "source"],
+        )
+
+    def test_default_order_when_nothing_is_stored(self):
+        self.assertEqual(
+            files_service.get_movie_prefixes([], lowdef=True),
+            ["lowdef", "previews", "source"],
+        )
+
+    def test_probe_asks_the_storage_for_every_prefix(self):
+        with self.stored_under("lowdef") as exists_movie:
+            self.assertEqual(
+                files_service.probe_movie_prefixes(self.preview_file_id),
+                ["lowdef"],
+            )
+            self.assertEqual(exists_movie.call_count, 3)
+
+    def test_storage_error_does_not_break_the_probe(self):
+        with patch.object(
+            file_store, "exists_movie", side_effect=Exception("timeout")
+        ):
+            self.assertEqual(
+                files_service.probe_movie_prefixes(self.preview_file_id), []
+            )
+
+    def record_prefixes(self, prefixes):
+        preview_file = files_service.get_preview_file_raw(self.preview_file_id)
+        preview_file.update(
+            {"data": {files_service.MOVIE_PREFIXES_KEY: prefixes}}
+        )
+        files_service.clear_preview_file_cache(self.preview_file_id)
+
+    def recorded_prefixes(self):
+        return files_service.get_preview_file_for_access(self.preview_file_id)[
+            "movie_prefixes"
+        ]
+
+    def test_access_lookup_carries_the_record(self):
+        self.assertIsNone(self.recorded_prefixes())
+        self.record_prefixes(["source"])
+        self.assertEqual(self.recorded_prefixes(), ["source"])
+        self.record_prefixes([])
+        self.assertEqual(self.recorded_prefixes(), [])
+
+    def test_garbage_record_reads_as_none(self):
+        self.record_prefixes("source")
+        self.assertIsNone(self.recorded_prefixes())
+        preview_file = files_service.get_preview_file_raw(self.preview_file_id)
+        preview_file.update({"data": ["source"]})
+        files_service.clear_preview_file_cache(self.preview_file_id)
+        self.assertIsNone(self.recorded_prefixes())
+        self.assertEqual(files_service.get_preview_file_data(preview_file), {})
+
+    def test_record_keeps_the_other_data(self):
+        preview_file = files_service.get_preview_file_raw(self.preview_file_id)
+        preview_file.update({"data": {"original_width": 1920}})
+        files_service.record_movie_prefixes(self.preview_file_id, ["lowdef"])
+        self.assertEqual(self.recorded_prefixes(), ["lowdef"])
+        self.assertEqual(
+            files_service.get_preview_file(self.preview_file_id)["data"],
+            {
+                "original_width": 1920,
+                files_service.MOVIE_PREFIXES_KEY: ["lowdef"],
+            },
         )

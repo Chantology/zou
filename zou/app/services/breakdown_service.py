@@ -311,13 +311,23 @@ def update_casting(entity_id, casting):
                     project_id=str(entity.project_id),
                 )
 
+    _announce_casting_change(entity, added_asset_ids, removed_asset_ids)
+    return casting
+
+
+def _announce_casting_change(entity, added_asset_ids, removed_asset_ids):
+    """
+    Refresh what hangs from the casting of given entity once its links
+    changed: its link count, the cached serializations, the shot stats, the
+    episode links derived from the shots, and the listeners through a
+    casting-update event carrying the diff.
+    """
     entity_id = str(entity.id)
-    nb_entities_out = len(casting)
-    entity.update({"nb_entities_out": nb_entities_out})
+    entity.update({"nb_entities_out": _count_live_links(entity.id)})
     _clear_casting_cache(entity_id)
     entity_dict = entity.serialize()
     casting_diff = {
-        "nb_entities_out": nb_entities_out,
+        "nb_entities_out": entity.nb_entities_out,
         "added_asset_ids": added_asset_ids,
         "removed_asset_ids": removed_asset_ids,
     }
@@ -345,7 +355,50 @@ def update_casting(entity_id, casting):
             {"asset_id": entity_id, **casting_diff},
             project_id=str(entity.project_id),
         )
-    return casting
+
+
+def cast_asset(entity_id, asset_id, nb_occurences=None, label=None):
+    """
+    Cast given asset in given entity, leaving the other assets of its
+    casting untouched: a caller working from a stale view of the casting
+    cannot erase them. A count or label of None keeps the current one (one
+    occurrence and no label on a new link).
+    """
+    entity = entities_service.get_entity_raw(entity_id)
+    link = get_entity_link_raw(entity_id, asset_id)
+    if nb_occurences is None:
+        nb_occurences = link.nb_occurences if link else 1
+    if label is None:
+        label = link.label if link else ""
+    create_casting_link(entity.id, asset_id, nb_occurences, label)
+    # The asset list of an episode is drawn from its casting: the asset
+    # just joined the episode, and only asset:update makes the clients
+    # reload it (same as update_casting on an episode).
+    if shots_service.is_episode(entity.serialize()):
+        events.emit(
+            "asset:update",
+            {"asset_id": str(asset_id)},
+            project_id=str(entity.project_id),
+        )
+    added_asset_ids = [] if link else [str(asset_id)]
+    _announce_casting_change(entity, added_asset_ids, [])
+    return get_casting(entity_id)
+
+
+def uncast_asset(entity_id, asset_id):
+    """
+    Remove given asset from the casting of given entity, leaving the other
+    assets untouched. Nothing happens when the asset was not cast.
+    """
+    link = get_entity_link_raw(entity_id, asset_id)
+    if link is None:
+        return get_casting(entity_id)
+    entity = entities_service.get_entity_raw(entity_id)
+    if shots_service.is_episode(entity.serialize()):
+        _remove_asset_from_episode_shots(asset_id, entity_id)
+    link.delete()
+    _announce_casting_change(entity, [], [str(asset_id)])
+    return get_casting(entity_id)
 
 
 def _clear_casting_cache(entity_id):
@@ -437,10 +490,10 @@ def _remove_asset_from_episode_shots(asset_id, episode_id):
     ).filter(EntityLink.entity_out_id == asset_id)
     for link in links:
         shot = shots_service.get_shot_raw(str(link.entity_in_id))
-        shot.update({"nb_entities_out": shot.nb_entities_out - 1})
-        shots_service.clear_shot_cache(str(shot.id))
-        refresh_shot_casting_stats(shot.serialize())
         link.delete()
+        shots_service.clear_shot_cache(str(shot.id))
+        # Counts the links, so it runs once the link is gone.
+        refresh_shot_casting_stats(shot.serialize())
         events.emit(
             "shot:casting-update",
             {
@@ -485,7 +538,9 @@ def _detach_asset_from_episode_if_unused(asset_id, episode_id):
         return
 
     link = EntityLink.get_by(entity_in_id=episode_id, entity_out_id=asset_id)
-    if link is None:
+    # A link the manager set from the episode breakdown carries no flag:
+    # it is a decision of its own, not a mirror of the shots.
+    if link is None or not (link.data or {}).get("auto"):
         return
 
     episode = entities_service.get_entity_raw(episode_id)
@@ -532,6 +587,7 @@ def _create_episode_casting_link(entity, asset_id, nb_occurences=1, label=""):
                     entity_out_id=asset_id,
                     nb_occurences=nb_occurences,
                     label=label,
+                    data={"auto": True},
                 )
                 # The count is what the breakdown of the episode is drawn
                 # from, and the detach path below decrements it: without
@@ -885,6 +941,24 @@ def refresh_shot_casting_stats(shot, priority_map=None):
     """
     if priority_map is None:
         priority_map = _get_task_type_priority_map(shot["project_id"])
+    # The shots page divides the ready count by this counter, the casting
+    # page lists the live links: archiving an asset keeps its links and
+    # deleting one drops them, and neither path touched the counter.
+    shot_raw = Entity.get(shot["id"])
+    nb_live = _count_live_links(shot["id"])
+    if shot_raw.nb_entities_out != nb_live:
+        shot_raw.update({"nb_entities_out": nb_live})
+        shots_service.clear_shot_cache(shot["id"])
+        events.emit(
+            "shot:casting-update",
+            {
+                "shot_id": shot["id"],
+                "nb_entities_out": nb_live,
+                "added_asset_ids": [],
+                "removed_asset_ids": [],
+            },
+            project_id=shot["project_id"],
+        )
     casting = get_entity_casting(shot["id"])
     tasks = Task.get_all_by(entity_id=shot["id"])
     for task in tasks:
@@ -911,6 +985,19 @@ def refresh_all_shot_casting_stats():
         priority_map = _get_task_type_priority_map(project["id"])
         for shot in shots_service.get_shots_for_project(project["id"]):
             refresh_shot_casting_stats(shot, priority_map)
+
+
+def _count_live_links(entity_id):
+    """
+    Count the assets cast in given entity that are not canceled, which is
+    what get_casting lists.
+    """
+    return (
+        EntityLink.query.filter_by(entity_in_id=entity_id)
+        .join(Entity, EntityLink.entity_out_id == Entity.id)
+        .filter(Entity.canceled != True)
+        .count()
+    )
 
 
 def _get_task_type_priority_map(project_id):

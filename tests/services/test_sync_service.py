@@ -704,10 +704,16 @@ class DownloadFileTestCase(unittest.TestCase):
             yield b"partial content"
             raise RuntimeError("stream interrupted")
 
+        with open(self.file_path, "wb") as previous:
+            previous.write(b"previous complete content")
+
         sync_service.download_file(
             self.file_path, "previews", failing_dl_func, "preview-id"
         )
-        self.assertFalse(os.path.exists(self.file_path))
+        # The previous download is not truncated either.
+        with open(self.file_path, "rb") as downloaded:
+            self.assertEqual(downloaded.read(), b"previous complete content")
+        self.assertEqual(os.listdir(self.folder), ["preview.mp4"])
 
     def test_successful_download_keeps_file(self):
         def dl_func(prefix, preview_file_id):
@@ -1063,4 +1069,52 @@ class VerifyProjectSyncTestCase(ApiDBTestCase):
         self.assertEqual(
             self.row(output.getvalue(), "Asset"),
             ["Asset", "N/A", "1", "-", "ok"],
+        )
+
+
+class SyncSourceMovieTestCase(ApiDBTestCase):
+    """
+    Which movie prefixes are pulled from the other instance.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.generate_base_context()
+        self.generate_fixture_asset()
+        self.generate_fixture_task()
+        self.preview_file = self.generate_fixture_preview_file()
+
+    def fetched_paths(self, sync_source_movie_files):
+        with mock.patch.object(
+            sync_service.config,
+            "SYNC_SOURCE_MOVIE_FILES",
+            sync_source_movie_files,
+        ), mock.patch.object(
+            sync_service, "download_file_from_another_instance"
+        ) as download:
+            sync_service.download_preview_from_another_instance(
+                self.preview_file
+            )
+        return [call.args[0] for call in download.mock_calls]
+
+    def test_the_source_movie_is_left_out_by_default(self):
+        paths = self.fetched_paths(False)
+        self.assertIn(
+            f"/movies/originals/preview-files/{self.preview_file.id}.mp4",
+            paths,
+        )
+        self.assertNotIn(
+            f"/movies/source/preview-files/{self.preview_file.id}.mp4",
+            paths,
+        )
+
+    def test_the_source_movie_is_pulled_when_asked_for(self):
+        """
+        An instance skipping the normalization stores its movie under the
+        source prefix: without it the copy would hold no movie at all.
+        """
+        paths = self.fetched_paths(True)
+        self.assertIn(
+            f"/movies/source/preview-files/{self.preview_file.id}.mp4",
+            paths,
         )

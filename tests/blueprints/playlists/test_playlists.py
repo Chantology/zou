@@ -1,4 +1,5 @@
 from tests.base import ApiDBTestCase
+from zou.app import app
 
 from zou.app.models.notification import Notification
 from zou.app.models.person import Person
@@ -34,6 +35,29 @@ class PlaylistTestCase(ApiDBTestCase):
         self.generate_fixture_playlist("Playlist 1")
         playlists = self.get(f"data/projects/{self.project_id}/playlists")
         self.assertEqual(len(playlists), 1)
+
+    def test_get_all_episodes_playlists_filtered_by_entity(self):
+        self.generate_fixture_playlist(
+            "All assets", for_entity="asset", is_for_all=True
+        )
+        self.generate_fixture_playlist(
+            "All shots", for_entity="shot", is_for_all=True
+        )
+        self.generate_fixture_playlist(
+            "Episode shots", episode_id=self.episode_id
+        )
+        base = f"data/projects/{self.project_id}/episodes/all/playlists"
+        self.assertEqual(
+            {p["name"] for p in self.get(base)}, {"All assets", "All shots"}
+        )
+        self.assertEqual(
+            [p["name"] for p in self.get(f"{base}?for_entity=shot")],
+            ["All shots"],
+        )
+        self.assertEqual(
+            [p["name"] for p in self.get(f"{base}?for_entity=asset")],
+            ["All assets"],
+        )
 
     def test_crud_list_hides_internal_playlists_from_clients(self):
         self.generate_fixture_playlist("Internal")
@@ -186,6 +210,22 @@ class PlaylistTestCase(ApiDBTestCase):
                 "for_entity": "banana",
             },
             400,
+        )
+
+    def test_create_playlist_duplicate_name_is_a_client_error(self):
+        self.generate_fixture_playlist(
+            "Playlist 1", episode_id=self.episode_id
+        )
+        data = {
+            "name": "Playlist 1",
+            "project_id": self.project_id,
+            "episode_id": self.episode_id,
+        }
+        with self.assertNoLogs(app.logger, level="ERROR"):
+            result = self.post("data/playlists/", data, 400)
+        self.assertEqual(
+            result["message"],
+            "A record with the same unique values already exists.",
         )
 
     def test_update_playlist_rejects_unknown_for_entity(self):

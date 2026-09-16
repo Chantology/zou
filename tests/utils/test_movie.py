@@ -174,6 +174,123 @@ class MovieTestCase(unittest.TestCase):
         test_name = "test_concate_demuxer"
         self.concat_testing(movie.concat_demuxer, test_name)
 
+    def test_concat_demuxer_ignores_timecode_stream(self):
+        # Previews exported from DaVinci Resolve carry a tmcd data stream
+        # next to video and audio. The demuxer path must ignore it instead
+        # of silently falling back to the re-encoding concat filter, which
+        # drifts (cgwire/kitsu#2184).
+        videos = []
+        for i in range(0, 2):
+            video = str(Path(self.tmpdir) / f"{i}-tmcd.mp4")
+            video_in = ffmpeg.input(
+                "testsrc=size=320x240:rate=25:duration=1", f="lavfi"
+            )
+            audio_in = ffmpeg.input(
+                "anullsrc=r=48000:cl=stereo:d=1", f="lavfi"
+            )
+            ffmpeg.output(
+                video_in,
+                audio_in,
+                video,
+                vcodec="libx264",
+                pix_fmt="yuv420p",
+                acodec="aac",
+                shortest=None,
+                timecode="01:00:00:00",
+            ).overwrite_output().run(quiet=True)
+            codec_types = [
+                stream["codec_type"]
+                for stream in ffmpeg.probe(video)["streams"]
+            ]
+            self.assertEqual(codec_types, ["video", "audio", "data"])
+            videos.append((video, None))
+
+        out = str(Path(self.tmpdir) / "out-tmcd.mp4")
+        result = movie.build_playlist_movie(
+            movie.concat_demuxer, videos, out, 320, 240, fps=25
+        )
+        self.assertTrue(result.get("success"))
+        self.assertFalse(result.get("message"))
+        self.assertEqual(movie.get_movie_size(out), (320, 240))
+
+    def test_concat_demuxer_accepts_audio_first_files(self):
+        # Stream order inside a container is free: some muxers write the
+        # audio track first. The output maps streams by type and the
+        # layout check keeps the set homogeneous, so an audio-first set
+        # takes the exact demuxer path too.
+        videos = []
+        for i in range(0, 2):
+            video = str(Path(self.tmpdir) / f"{i}-audio-first.mp4")
+            video_in = ffmpeg.input(
+                "testsrc=size=320x240:rate=25:duration=1", f="lavfi"
+            )
+            audio_in = ffmpeg.input(
+                "anullsrc=r=48000:cl=stereo:d=1", f="lavfi"
+            )
+            ffmpeg.output(
+                audio_in,
+                video_in,
+                video,
+                vcodec="libx264",
+                pix_fmt="yuv420p",
+                acodec="aac",
+                shortest=None,
+            ).overwrite_output().run(quiet=True)
+            codec_types = [
+                stream["codec_type"]
+                for stream in ffmpeg.probe(video)["streams"]
+            ]
+            self.assertEqual(codec_types, ["audio", "video"])
+            videos.append((video, None))
+
+        out = str(Path(self.tmpdir) / "out-audio-first.mp4")
+        result = movie.build_playlist_movie(
+            movie.concat_demuxer, videos, out, 320, 240, fps=25
+        )
+        self.assertTrue(result.get("success"))
+        self.assertFalse(result.get("message"))
+        self.assertEqual(movie.get_movie_size(out), (320, 240))
+
+    def test_concat_demuxer_rejects_mixed_stream_layouts(self):
+        # The concat demuxer matches streams across files by index, so
+        # tolerating extra data streams is only safe when every file has
+        # the same layout. A mixed set must be rejected up front.
+        with_tmcd = str(Path(self.tmpdir) / "with-tmcd.mp4")
+        without_tmcd = str(Path(self.tmpdir) / "without-tmcd.mp4")
+        for video, timecode in (
+            (with_tmcd, "01:00:00:00"),
+            (without_tmcd, None),
+        ):
+            video_in = ffmpeg.input(
+                "testsrc=size=320x240:rate=25:duration=1", f="lavfi"
+            )
+            audio_in = ffmpeg.input(
+                "anullsrc=r=48000:cl=stereo:d=1", f="lavfi"
+            )
+            kwargs = {"timecode": timecode} if timecode else {}
+            ffmpeg.output(
+                video_in,
+                audio_in,
+                video,
+                vcodec="libx264",
+                pix_fmt="yuv420p",
+                acodec="aac",
+                shortest=None,
+                **kwargs,
+            ).overwrite_output().run(quiet=True)
+
+        out = str(Path(self.tmpdir) / "out-mixed.mp4")
+        result = movie.build_playlist_movie(
+            movie.concat_demuxer,
+            [(with_tmcd, None), (without_tmcd, None)],
+            out,
+            320,
+            240,
+            fps=25,
+        )
+        self.assertFalse(result.get("success"))
+        self.assertIn("layout", result.get("message"))
+
     def test_concat_filter_testing(self):
         test_name = "test_concate_filter"
         self.concat_testing(movie.concat_filter, test_name)
@@ -221,3 +338,17 @@ class MovieTestCase(unittest.TestCase):
 
         self.assertEqual(img_width, target_width * 8)
         self.assertEqual(img_height, 100 * rows)
+
+    def test_get_movie_fps(self):
+        for r_frame_rate, expected in [
+            ("25/1", 25),
+            ("25/2", 12.5),
+            ("30000/1001", 29.97),
+            ("24", 24),
+            ("0/0", 25),
+            ("garbage", 25),
+        ]:
+            fps = movie.get_movie_fps(
+                video_track={"r_frame_rate": r_frame_rate}
+            )
+            self.assertAlmostEqual(fps, expected, places=2, msg=r_frame_rate)

@@ -153,6 +153,14 @@ class EpisodePlaylistsResource(MethodView, ArgsMixin):
               format: uuid
             description: Episode unique identifier or special value (main, all)
             example: a24a6ea4-ce75-4665-a070-57453082c25
+          - in: query
+            name: for_entity
+            required: false
+            schema:
+              type: string
+            description: Only list playlists of this entity type (asset,
+              shot, sequence, edit, episode)
+            example: shot
         responses:
           200:
             description: All playlists related to given episode
@@ -183,6 +191,7 @@ class EpisodePlaylistsResource(MethodView, ArgsMixin):
         page = self.get_page()
         sort_by = self.get_sort_by()
         task_type_id = self.get_text_parameter("task_type_id")
+        for_entity = self.get_text_parameter("for_entity")
         if episode_id not in ["main", "all"]:
             shots_service.get_episode(episode_id)
         return playlists_service.all_playlists_for_episode(
@@ -192,6 +201,7 @@ class EpisodePlaylistsResource(MethodView, ArgsMixin):
             page=page,
             sort_by=sort_by,
             task_type_id=task_type_id,
+            for_entity=for_entity,
         )
 
 
@@ -930,8 +940,6 @@ class TempPlaylistResource(MethodView, ArgsMixin):
             application/json:
               schema:
                 type: object
-                required:
-                  - task_ids
                 properties:
                   task_ids:
                     type: array
@@ -939,6 +947,16 @@ class TempPlaylistResource(MethodView, ArgsMixin):
                       type: string
                       format: uuid
                     description: List of task unique identifiers
+                    example: ["a24a6ea4-ce75-4665-a070-57453082c25"]
+                  entity_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+                    description: >
+                      List of entity unique identifiers, each contributing
+                      the task holding its current preview (or its first
+                      task with a preview)
                     example: ["a24a6ea4-ce75-4665-a070-57453082c25"]
         responses:
           200:
@@ -964,7 +982,14 @@ class TempPlaylistResource(MethodView, ArgsMixin):
         """
         permissions_service.check_project_access(project_id)
         body = validation.validate_request_body(TempPlaylistCreateSchema)
-        task_ids = [str(t) for t in body.task_ids]
+        task_ids = [str(t) for t in body.task_ids] + [
+            task_id
+            for task_id in map(
+                playlists_service.get_playlist_task_id_for_entity,
+                map(str, body.entity_ids),
+            )
+            if task_id
+        ]
         for task_id in task_ids:
             permissions_service.check_task_access(task_id)
         sort = self.get_bool_parameter("sort")

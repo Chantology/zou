@@ -32,6 +32,7 @@ from zou.app.services import (
 )
 from zou.app.utils import (
     events,
+    http_cache,
     query,
     permissions,
     date_helpers,
@@ -449,7 +450,9 @@ class TaskCommentResource(MethodView):
         comment = tasks_service.get_comment(comment_id)
         if comment["object_id"] != task_id:
             raise CommentNotFoundException
-        permissions_service.check_comment_access(comment)
+        permissions_service.check_comment_access(
+            comment["id"], comment=comment
+        )
         return comment
 
     def pre_delete(self, comment):
@@ -2526,11 +2529,29 @@ class ProjectTasksResource(MethodView, ArgsMixin):
         """
         projects_service.get_project(project_id)
         permissions_service.check_project_access(project_id)
+        # The validator hashes everything that shapes the response: the
+        # tasks freshness signal, plus the caller and its effective role
+        # so a role change or an account switch on the same browser
+        # never validates a payload shaped for someone else.
+        current_user = persons_service.get_current_user()
+        etag = http_cache.build_etag(
+            tasks_service.get_project_tasks_fingerprint(project_id),
+            current_user["id"],
+            permissions.get_effective_role(),
+        )
+        if http_cache.is_fresh(etag):
+            return http_cache.not_modified(etag)
         page = self.get_page()
         task_type_id = self.get_task_type_id()
         episode_id = self.get_episode_id()
-        return tasks_service.get_tasks_for_project(
-            project_id, page, task_type_id=task_type_id, episode_id=episode_id
+        return http_cache.json_response(
+            tasks_service.get_tasks_for_project(
+                project_id,
+                page,
+                task_type_id=task_type_id,
+                episode_id=episode_id,
+            ),
+            etag,
         )
 
 
@@ -2886,8 +2907,8 @@ class PersonsTasksDatesResource(MethodView, ArgsMixin):
         project_ids = None
         busy_project_ids = None
         if not permissions.has_admin_permissions():
-            # Supervisors reach the team schedule page too (kitsu#1579):
-            # like managers, they only see the projects of their own teams.
+            # Supervisors reach the team schedule page too: like managers,
+            # they only see the projects of their own teams.
             permissions.check_at_least_supervisor_permissions()
             if project_id is not None:
                 if not permissions_service.check_belong_to_project(project_id):
@@ -2909,6 +2930,27 @@ class PersonsTasksDatesResource(MethodView, ArgsMixin):
             project_ids=project_ids,
             busy_project_ids=busy_project_ids,
         )
+
+
+def check_open_tasks_filter_args(resource, args):
+    """
+    Reject malformed open tasks filter values with a 400 before they
+    reach the SQL layer as invalid UUID or date binds.
+    """
+    for field in (
+        "project_id",
+        "task_type_id",
+        "task_status_id",
+        "studio_id",
+        "department_id",
+    ):
+        if args[field] is not None:
+            resource.check_id_parameter(args[field])
+    if args["person_id"] not in (None, "unassigned"):
+        for person_id in args["person_id"].split(","):
+            resource.check_id_parameter(person_id)
+    resource.parse_date_parameter(args["start_date"])
+    resource.parse_date_parameter(args["due_date"])
 
 
 class OpenTasksResource(MethodView, ArgsMixin):
@@ -3045,12 +3087,13 @@ class OpenTasksResource(MethodView, ArgsMixin):
                 ("department_id", None, False, str),
                 ("start_date", None, False, str),
                 ("due_date", None, False, str),
-                ("priority", None, False, str),
+                ("priority", None, False, int),
                 ("group_by", None, False, str),
                 ("page", None, False, int),
                 ("limit", 100, False, int),
             ]
         )
+        check_open_tasks_filter_args(self, args)
         return tasks_service.get_open_tasks(
             task_type_id=args["task_type_id"],
             project_id=args["project_id"],
@@ -3100,3 +3143,134 @@ class OpenTasksStatsResource(MethodView, ArgsMixin):
               description: Bad request
         """
         return tasks_service.get_open_tasks_stats()
+
+
+class OpenTasksBurndownResource(MethodView, ArgsMixin):
+
+    @jwt_required()
+    def get(self):
+        """
+        Get open tasks burndown
+        ---
+        tags:
+        - Tasks
+        description: Return burndown aggregates for tasks from open projects
+          matching the same filters as the open tasks route. It includes the
+          total amount and estimation, the schedule bounds (task start and
+          due dates, project dates as fallback) and the amount of tasks
+          done per day.
+        parameters:
+          - in: query
+            name: project_id
+            required: false
+            schema:
+              type: string
+              format: uuid
+            description: Filter tasks on given project ID
+          - in: query
+            name: task_status_id
+            required: false
+            schema:
+              type: string
+              format: uuid
+            description: Filter tasks on given task status ID
+          - in: query
+            name: task_type_id
+            required: false
+            schema:
+              type: string
+              format: uuid
+            description: Filter tasks on given task type ID
+          - in: query
+            name: person_id
+            required: false
+            schema:
+              type: string
+              format: uuid
+            description: Filter tasks on given person ID
+          - in: query
+            name: studio_id
+            required: false
+            schema:
+              type: string
+              format: uuid
+            description: Filter tasks on given studio ID
+          - in: query
+            name: department_id
+            required: false
+            schema:
+              type: string
+              format: uuid
+            description: Filter tasks on given department ID
+          - in: query
+            name: start_date
+            required: false
+            schema:
+              type: string
+              format: date
+            description: Filter tasks posterior to given start date
+          - in: query
+            name: due_date
+            required: false
+            schema:
+              type: string
+              format: date
+            description: Filter tasks anterior to given due date
+          - in: query
+            name: priority
+            required: false
+            schema:
+              type: integer
+            description: Filter tasks on given priority
+        responses:
+            200:
+              description: Burndown aggregates for the filtered tasks
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      total:
+                        type: integer
+                        description: Total number of tasks
+                      total_estimation:
+                        type: number
+                        description: Total estimation of tasks in minutes
+                      start_date:
+                        type: string
+                        format: date
+                        description: First task start date
+                      end_date:
+                        type: string
+                        format: date
+                        description: Last task due date
+                      done_by_day:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            date:
+                              type: string
+                              format: date
+                            done:
+                              type: integer
+                            done_estimation:
+                              type: number
+            400:
+              description: Bad request
+        """
+        args = self.get_args(
+            [
+                ("task_type_id", None, False, str),
+                ("project_id", None, False, str),
+                ("person_id", None, False, str),
+                ("task_status_id", None, False, str),
+                ("studio_id", None, False, str),
+                ("department_id", None, False, str),
+                ("start_date", None, False, str),
+                ("due_date", None, False, str),
+                ("priority", None, False, int),
+            ]
+        )
+        check_open_tasks_filter_args(self, args)
+        return tasks_service.get_open_tasks_burndown(**args)

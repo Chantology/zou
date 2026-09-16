@@ -6,6 +6,10 @@ from flask import current_app
 from werkzeug.utils import cached_property
 from zou.app import config
 from flask_fs.backends.local import LocalBackend
+from flask_fs.errors import FileNotFound
+from werkzeug.exceptions import RequestedRangeNotSatisfiable
+
+from zou.app.utils import fs
 
 # ----------------------------------------------------------------------
 # Module state
@@ -14,6 +18,8 @@ from flask_fs.backends.local import LocalBackend
 pictures = None
 movies = None
 files = None
+
+RANGE_CHUNK_SIZE = 1024 * 1024
 
 
 # ----------------------------------------------------------------------
@@ -310,6 +316,25 @@ def _copy(bucket, key, target, bucket_name):
         return bucket.copy(key, target)
 
 
+def _read_chunks(bucket, key):
+    """
+    flask_fs checks that the object exists before reading it, and the S3
+    and Swift backends answer False to any error, a 503 included: every
+    failure would reach the caller as FileNotFound. Read straight from
+    the backend so that only a genuine 404 becomes one.
+    """
+    backend = bucket.backend
+    try:
+        generator = backend.read_chunks(key)
+    except Exception as exc:
+        if fs.is_missing_file_error(exc):
+            raise FileNotFound(key) from exc
+        raise
+    if backend.encryptor is not None:
+        generator = backend.encryptor.decrypt_file_from_generator(generator)
+    return generator
+
+
 def make_read_generator(bucket, key, bucket_name=None):
     """
     Create a generator that yields chunks from the storage bucket.
@@ -319,8 +344,10 @@ def make_read_generator(bucket, key, bucket_name=None):
     When ``bucket_name`` is provided and Prometheus is enabled, the generator
     records a ``download`` operation with cumulative byte count.
     """
-    read_stream = bucket.read_chunks(key)
+    return _measured_read(_read_chunks(bucket, key), key, bucket_name)
 
+
+def _measured_read(read_stream, key, bucket_name=None):
     def read_generator(read_stream):
         tracker = _ByteTracker()
         measured = (
@@ -333,6 +360,9 @@ def make_read_generator(bucket, key, bucket_name=None):
                 for chunk in read_stream:
                     tracker.add(len(chunk))
                     yield chunk
+        except FileNotFoundError as exc:
+            # The local backend only opens the file on the first read.
+            raise FileNotFound(key) from exc
         finally:
             if hasattr(read_stream, "close"):
                 try:
@@ -341,6 +371,88 @@ def make_read_generator(bucket, key, bucket_name=None):
                     pass
 
     return read_generator(read_stream)
+
+
+def can_stream_movie_ranges():
+    """
+    Tell whether a movie can be served straight from the object storage by
+    byte range. Encrypted Swift objects cannot: the cipher stream has to be
+    read from its start.
+    """
+    return (
+        config.FS_BACKEND in ("s3", "swift")
+        and movies.backend.encryptor is None
+    )
+
+
+def _read_swift_range(backend, key, range_header):
+    """
+    SwiftBackend.read_chunks does not take a Range header: borrow a
+    connection from the backend's pool the same way it does, and hand it
+    back once the stream is closed or dropped. A swiftclient.Connection
+    is not thread-safe, the pool is what keeps the request thread and the
+    cache fill thread apart. Private flask_fs members: moving the Range
+    support into read_chunks would drop them.
+    """
+    from flask_fs.backends.swift import _PoolReleasingStream
+
+    slot = backend._acquire_slot()
+    conn = slot if slot is not None else backend._new_connection()
+    headers = {"Range": range_header} if range_header else None
+    try:
+        resp_headers, chunks = conn.get_object(
+            backend.name,
+            key,
+            resp_chunk_size=RANGE_CHUNK_SIZE,
+            headers=headers,
+        )
+    except Exception:
+        backend._release(conn, healthy=False)
+        raise
+    return resp_headers, _PoolReleasingStream(chunks, backend._pool, conn)
+
+
+def read_movie_range(prefix, id, range_header=None):
+    """
+    Stream a movie from the object storage without caching it locally,
+    the given ``Range`` header value (``bytes=start-end``) applied by the
+    storage itself. Return ``(content_length, content_range, generator)``:
+    ``content_range`` is None when no range was asked.
+    """
+    key = make_key(prefix, id)
+    backend = movies.backend
+    try:
+        if config.FS_BACKEND == "s3":
+            kwargs = {"Range": range_header} if range_header else {}
+            obj = backend.bucket.Object(key).get(**kwargs)
+            body = obj["Body"]
+
+            def read_stream(body=body):
+                try:
+                    yield from body.iter_chunks(RANGE_CHUNK_SIZE)
+                finally:
+                    body.close()
+
+            content_length = obj["ContentLength"]
+            content_range = obj.get("ContentRange")
+            generator = read_stream()
+        else:
+            resp_headers, generator = _read_swift_range(
+                backend, key, range_header
+            )
+            content_length = int(resp_headers["content-length"])
+            content_range = resp_headers.get("content-range")
+    except Exception as exc:
+        if fs.is_missing_file_error(exc):
+            raise FileNotFound(key) from exc
+        if fs.is_range_error(exc):
+            raise RequestedRangeNotSatisfiable() from exc
+        raise
+    return (
+        content_length,
+        content_range,
+        _measured_read(generator, key, bucket_name="movies"),
+    )
 
 
 # ----------------------------------------------------------------------

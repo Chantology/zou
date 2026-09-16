@@ -1,7 +1,8 @@
 import datetime
 import io
+import json as stdlib_json
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
@@ -12,6 +13,7 @@ from zou.app.services import preview_files_service
 from zou.app.stores import auth_tokens_store, file_store
 from zou.app.utils import commands
 from zou.app.models.entity_type import EntityType
+from zou.app.models.plugin import Plugin
 from zou.app.models.task_type import TaskType
 from zou.cli import cli
 
@@ -401,3 +403,81 @@ class CreateBotCommandTestCase(ApiDBTestCase):
         # The token is the deliverable of the command, not a log line.
         token = result.output.strip().splitlines()[-1]
         self.assertGreater(len(token), 20)
+
+
+class ListPluginsCommandTestCase(ApiDBTestCase):
+    """
+    The JSON output is meant to be piped into another tool, so it has to
+    be parseable, not just printed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.runner = CliRunner()
+
+    def test_json_output_is_valid_json(self):
+        Plugin.create(
+            plugin_id="studio-tools",
+            name="Studio Tools",
+            version="1.0.0",
+            maintainer_name="Ellen Ripley",
+            license="MIT",
+        )
+        result = self.runner.invoke(cli, ["list-plugins", "--format", "json"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        plugins = stdlib_json.loads(result.output)
+        self.assertEqual(plugins[0]["Plugin ID"], "studio-tools")
+        self.assertEqual(plugins[0]["Name"], "Studio Tools")
+
+
+class UpgradeDbTelemetryTestCase(ApiDBTestCase):
+    """
+    Most deployments run upgrade-db on every boot, so the telemetry has to
+    follow the schema moving, not the command running.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.runner = CliRunner()
+
+    def run_upgrade_db(self, current_rev, head_rev="head-rev", *args):
+        connection = MagicMock()
+        connection.execute.return_value.first.return_value = (
+            (current_rev,) if current_rev is not None else None
+        )
+        engine = MagicMock()
+        engine.connect.return_value.__enter__.return_value = connection
+
+        script = MagicMock()
+        script.get_current_head.return_value = head_rev
+        script.walk_revisions.return_value = [
+            MagicMock(revision=rev)
+            for rev in (current_rev, head_rev)
+            if rev is not None
+        ]
+
+        with patch("sqlalchemy.create_engine", return_value=engine), patch(
+            "alembic.script.ScriptDirectory.from_config", return_value=script
+        ), patch("alembic.command.upgrade"), patch(
+            "zou.app.services.telemetry_service.send_main_infos"
+        ) as send:
+            result = self.runner.invoke(cli, ["upgrade-db", *args])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        return send
+
+    def test_no_telemetry_when_the_schema_did_not_move(self):
+        # The restart case: a container boots, upgrade-db is a no-op.
+        self.run_upgrade_db("head-rev").assert_not_called()
+
+    def test_telemetry_on_an_actual_upgrade(self):
+        self.run_upgrade_db("old-rev").assert_called_once()
+
+    def test_telemetry_on_a_fresh_install(self):
+        # No alembic_version table yet: that is a new instance to count.
+        self.run_upgrade_db(None).assert_called_once()
+
+    def test_no_telemetry_flag_still_wins(self):
+        self.run_upgrade_db(
+            "old-rev", "head-rev", "--no-telemetry"
+        ).assert_not_called()

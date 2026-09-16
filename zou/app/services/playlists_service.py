@@ -11,7 +11,6 @@ from pathlib import Path
 from shutil import copyfile
 from zipfile import ZipFile
 
-from flask_fs.errors import FileNotFound
 from slugify import slugify
 from sqlalchemy import or_
 from sqlalchemy.orm import defer, joinedload
@@ -28,7 +27,7 @@ from zou.app.models.task import Task
 from zou.app.models.task_type import TaskType
 
 from zou.utils import movie
-from zou.app.utils import fields, events, remote_job, emails
+from zou.app.utils import fields, events, fs, remote_job, emails
 from zou.app.utils import query as query_utils
 from zou.app.stores.redis_lock import with_playlist_lock
 
@@ -138,14 +137,20 @@ def all_playlists_for_episode(
     page=1,
     sort_by="updated_at",
     task_type_id=None,
+    for_entity=None,
 ):
     """
-    Return all playlists created for given episode.
+    Return all playlists created for given episode. The "all" pseudo-episode
+    lists the production-wide playlists of every entity type unless
+    `for_entity` narrows them (Kitsu splits them into All assets / All shots).
     """
     result = []
     query = Playlist.query
     if for_client:
         query = query.filter(Playlist.for_client)
+
+    if for_entity:
+        query = query.filter(Playlist.for_entity == for_entity)
 
     if task_type_id is not None and len(task_type_id) > 0:
         query = query.filter(Playlist.task_type_id == task_type_id)
@@ -736,34 +741,27 @@ def retrieve_playlist_tmp_file(preview_file):
     if preview_file["extension"] == "mp4":
         get_path_func = file_store.get_local_movie_path
         open_func = file_store.open_movie
-        exists_func = file_store.exists_movie
         prefix = "previews"
     elif preview_file["extension"] == "png":
         get_path_func = file_store.get_local_picture_path
         open_func = file_store.open_picture
-        exists_func = file_store.exists_picture
         prefix = "original"
     else:
         get_path_func = file_store.get_local_file_path
         open_func = file_store.open_file
-        exists_func = file_store.exists_file
         prefix = "previews"
 
-    if config.FS_BACKEND == "local":
-        file_path = get_path_func(prefix, preview_file["id"])
-    else:
-        file_path = os.path.join(
-            config.TMP_DIR,
-            f"cache-previews-{preview_file['id']}.{preview_file['extension']}",
-        )
-        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-            if exists_func(prefix, preview_file["id"]):
-                with open(file_path, "wb") as tmp_file:
-                    try:
-                        for chunk in open_func(prefix, preview_file["id"]):
-                            tmp_file.write(chunk)
-                    except FileNotFound:
-                        pass
+    # Same cache entry as the preview routes, written the same way: a
+    # download interrupted halfway must not leave a truncated file that
+    # the next build would concatenate as is.
+    file_path = fs.get_file_path_and_file(
+        config,
+        get_path_func,
+        open_func,
+        prefix,
+        preview_file["id"],
+        preview_file["extension"],
+    )
     file_name = names_service.get_preview_file_name(preview_file["id"])
     tmp_file_path = os.path.join(config.TMP_DIR, file_name)
     copyfile(file_path, tmp_file_path)
@@ -791,6 +789,7 @@ def build_playlist_movie_file(playlist, job, shots, params, full, remote):
     Build a movie for all files for a given playlist into the temporary folder.
     """
     success = False
+    message = None
     from zou.app import app
 
     with app.app_context():
@@ -802,8 +801,9 @@ def build_playlist_movie_file(playlist, job, shots, params, full, remote):
             if tmp_file_paths:
                 if not remote:
                     success = False
+                    demuxer_message = None
                     if not full:
-                        success = _run_concatenation(
+                        success, demuxer_message = _run_concatenation(
                             playlist,
                             job,
                             tmp_file_paths,
@@ -814,7 +814,7 @@ def build_playlist_movie_file(playlist, job, shots, params, full, remote):
 
                     # Try again using concat filter
                     if not success:
-                        success = _run_concatenation(
+                        success, _ = _run_concatenation(
                             playlist,
                             job,
                             tmp_file_paths,
@@ -822,6 +822,15 @@ def build_playlist_movie_file(playlist, job, shots, params, full, remote):
                             params,
                             movie.concat_filter,
                         )
+                        if success and demuxer_message is not None:
+                            message = (
+                                "The exact concat demuxer rejected the "
+                                f"previews ({demuxer_message}). The movie "
+                                "was built by the re-encoding concat "
+                                "filter instead, its timing can drift "
+                                "from the source previews."
+                            )
+                            app.logger.warning(message)
                 else:
                     try:
                         _run_remote_job_build_playlist(
@@ -838,7 +847,7 @@ def build_playlist_movie_file(playlist, job, shots, params, full, remote):
 
         # exception will be logged by rq
         finally:
-            job = end_build_job(playlist, job, success)
+            job = end_build_job(playlist, job, success, message)
 
     if not success:
         raise Exception(f"Failure while building playlist {playlist['id']!r}")
@@ -851,21 +860,24 @@ def _run_concatenation(
 ):
     """
     Concatenate the downloaded previews into the playlist movie, then
-    store it and clean the temporary files up.
+    store it and clean the temporary files up. Return whether it
+    succeeded, along with the concatenation message, if any.
     """
     success = False
+    message = None
     try:
         result = movie.build_playlist_movie(
             mode, tmp_file_paths, movie_file_path, **params._asdict()
         )
+        message = result.get("message")
         if result["success"] and os.path.exists(movie_file_path):
             file_store.add_movie("playlists", job["id"], movie_file_path)
             success = True
-        if result.get("message"):
+        if message:
             from zou.app import app
 
             with app.app_context():
-                app.logger.error(result["message"])
+                app.logger.error(message)
     except Exception:
         from zou.app import app
 
@@ -875,7 +887,7 @@ def _run_concatenation(
                 (playlist["id"], mode.__qualname__),
                 exc_info=1,
             )
-    return success
+    return success, message
 
 
 def _run_remote_job_build_playlist(
@@ -930,10 +942,11 @@ def start_build_job(playlist):
     return job.serialize()
 
 
-def end_build_job(playlist, job, success):
+def end_build_job(playlist, job, success, message=None):
     """
     Register in database that a build is finished. Emits an event to notify
-    clients that the build is done.
+    clients that the build is done. The optional message explains a
+    degraded or failed build.
     """
     if success:
         status = "succeeded"
@@ -942,13 +955,14 @@ def end_build_job(playlist, job, success):
 
     build_job = BuildJob.get(job["id"])
     if build_job is not None:
-        build_job.end(status=status)
+        build_job.end(status=status, message=message)
     events.emit(
         "build-job:update",
         {
             "build_job_id": job["id"],
             "playlist_id": playlist["id"],
             "status": status,
+            "message": message,
         },
         project_id=playlist["project_id"],
     )
@@ -1000,7 +1014,11 @@ def get_playlist_download_context_name(project, playlist):
             episode = shots_service.get_episode(episode_id)
             episode_name = episode["name"]
         elif playlist.get("is_for_all"):
-            episode_name = "all assets"
+            episode_name = (
+                "all assets"
+                if playlist.get("for_entity") == "asset"
+                else "all shots"
+            )
         else:
             episode_name = "main pack"
         context_name += f"_{slugify(episode_name, separator='_')}"
@@ -1150,26 +1168,33 @@ def generate_temp_playlist(task_ids, sort=True):
     for task_id in task_ids:
         entity = generate_playlisted_entity_from_task(task_id, task_type_links)
         entities.append(entity)
-    if len(entities) > 0:
-        if not sort:
-            return entities
-        try:
-            if "episode_name" in entities[0]:
-                return sorted(entities, key=itemgetter("episode_name", "name"))
-            elif "sequence_name" in entities[0]:
-                return sorted(
-                    entities, key=itemgetter("sequence_name", "name")
-                )
-            elif "asset_type_name" in entities[0]:
-                return sorted(
-                    entities, key=itemgetter("asset_type_name", "name")
-                )
-            else:
-                return entities
-        except Exception:
-            return entities
-    else:
-        return []
+    if not sort:
+        return entities
+    # Every entry carries the whole key set (empty when not applicable), so
+    # a single composite key sorts shots by sequence, edits by episode and
+    # assets by type. Probing one key at a time picked episode_name for
+    # shots and lost the sequence order.
+    return sorted(
+        entities,
+        key=itemgetter(
+            "episode_name", "sequence_name", "asset_type_name", "name"
+        ),
+    )
+
+
+def get_playlist_task_id_for_entity(entity_id):
+    """
+    Return the task a playlist entry is built from for given entity: the most
+    recently reviewed one among the tasks holding a preview. None when no task
+    of the entity has one.
+    """
+    task = (
+        Task.query.filter(Task.entity_id == entity_id)
+        .filter(Task.last_preview_file_id.isnot(None))
+        .order_by(Task.last_comment_date.desc())
+        .first()
+    )
+    return str(task.id) if task is not None else None
 
 
 def generate_playlisted_entity_from_task(task_id, task_type_links):

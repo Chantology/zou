@@ -349,6 +349,20 @@ class TaskReaderTestCase(TaskTestCase):
         self.assertEqual(tasks[0]["name"], "Première Tâche")
         self.assertEqual(tasks[0]["task_type_name"], "Modélisation")
 
+    def test_get_task_dicts_for_entity_is_sorted_by_name(self):
+        """
+        The detailed task listings promise a name-ordered output, wherever
+        the sort happens.
+        """
+        self.generate_fixture_task(name="B task")
+        self.generate_fixture_task(name="A task")
+
+        tasks = tasks_service.get_task_dicts_for_entity(self.asset.id)
+
+        names = [task["name"] for task in tasks]
+        self.assertEqual(names, sorted(names, key=str.casefold))
+        self.assertLess(names.index("A task"), names.index("B task"))
+
     def test_get_task_dicts_for_entity_with_relations_attaches_assignees(self):
         self.generate_fixture_task(name="Secondary")
 
@@ -768,6 +782,22 @@ class GetOrCreateTaskTypeTestCase(ApiDBTestCase):
         )
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(len(TaskType.get_all_by(name="Concept")), 1)
+
+    def test_return_existing_with_a_name_differing_only_by_case(self):
+        """
+        The bootstrap follows the same rule as the API: a name differing
+        only by case is the same task type, and the existing row keeps
+        its name.
+        """
+        first = tasks_service.get_or_create_task_type(
+            self.department, "Concept", "#8D6E63", 1
+        )
+        second = tasks_service.get_or_create_task_type(
+            self.department, "CONCEPT", "#8D6E63", 1
+        )
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(second["name"], "Concept")
+        self.assertEqual(TaskType.get_all_by(name="CONCEPT"), [])
 
     def test_same_name_different_for_entity_coexist(self):
         asset_type = tasks_service.get_or_create_task_type(

@@ -9,6 +9,7 @@ from zou.app.blueprints.previews.resources import (
     PreviewFileLowMovieResource,
     PreviewFileMovieResource,
     PreviewFileMovieDownloadResource,
+    PreviewFileSourceMovieResource,
     PreviewFileThumbnailResource,
     PreviewFileResource,
     PreviewFileDownloadResource,
@@ -17,11 +18,9 @@ from zou.app.blueprints.previews.resources import (
     PreviewFileOriginalResource,
     PreviewFileTileResource,
     OrganisationThumbnailResource,
-    CreateOrganisationThumbnailResource,
     ProjectThumbnailResource,
-    CreateProjectThumbnailResource,
+    ReadOnlyProjectThumbnailResource,
     PersonThumbnailResource,
-    CreatePersonThumbnailResource,
     RunningPreviewFiles,
     SetMainPreviewResource,
     UpdateAnnotationsResource,
@@ -63,6 +62,10 @@ routes = [
         PreviewFileLowMovieResource,
     ),
     (
+        "/movies/source/preview-files/<instance_id>.mp4",
+        PreviewFileSourceMovieResource,
+    ),
+    (
         "/pictures/thumbnails/preview-files/<instance_id>.png",
         PreviewFileThumbnailResource,
     ),
@@ -96,7 +99,7 @@ routes = [
     ),
     (
         "/pictures/thumbnails/organisations/<instance_id>",
-        CreateOrganisationThumbnailResource,
+        OrganisationThumbnailResource,
     ),
     (
         "/pictures/thumbnails/organisations/<instance_id>.png",
@@ -104,7 +107,7 @@ routes = [
     ),
     (
         "/pictures/thumbnails/persons/<instance_id>",
-        CreatePersonThumbnailResource,
+        PersonThumbnailResource,
     ),
     (
         "/pictures/thumbnails/persons/<instance_id>.png",
@@ -112,11 +115,11 @@ routes = [
     ),
     (
         "/pictures/thumbnails/projects/<instance_id>",
-        CreateProjectThumbnailResource,
+        ProjectThumbnailResource,
     ),
     (
         "/pictures/thumbnails/projects/<instance_id>.png",
-        ProjectThumbnailResource,
+        ReadOnlyProjectThumbnailResource,
     ),
     (
         "/pictures/preview-background-files/<instance_id>",

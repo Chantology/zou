@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime
 from unittest.mock import patch
 
 from tests.base import ApiDBTestCase
@@ -12,6 +13,8 @@ from zou.app.services import (
     projects_service,
 )
 from zou.app.services.exception import PlaylistLockTimeoutException
+from zou.utils import movie
+from zou.utils.movie import EncodingParameters
 
 
 class PlaylistsServiceTestCase(ApiDBTestCase):
@@ -184,6 +187,86 @@ class PlaylistsServiceTestCase(ApiDBTestCase):
         self.assertEqual(len(shots), 1)
         self.assertEqual(str(self.shot.id), shots[0]["id"])
         self.assertEqual(len(shots[0]["preview_files"][task_type_id]), 2)
+
+    def test_generate_temp_playlist_sorted_by_sequence(self):
+        """
+        Shots of several sequences sort by sequence first, then by name:
+        never all the SH010 of every sequence in a row.
+        """
+        self.generate_fixture_preview_files()
+        sequence_1 = self.sequence
+        sequence_2 = self.generate_fixture_sequence("S02")
+        shot_ids = [
+            str(self.generate_fixture_shot(name, sequence_id=sequence_id).id)
+            for sequence_id, name in [
+                (sequence_2.id, "SH010"),
+                (sequence_1.id, "SH020"),
+                (sequence_2.id, "SH020"),
+                (sequence_1.id, "SH010"),
+            ]
+        ]
+        task_ids = [
+            self.generate_fixture_shot_task("Master", shot_id=shot_id).id
+            for shot_id in shot_ids
+        ]
+        entities = playlists_service.generate_temp_playlist(task_ids)
+        self.assertEqual(
+            [(e["sequence_name"], e["name"]) for e in entities],
+            [
+                ("S01", "SH010"),
+                ("S01", "SH020"),
+                ("S02", "SH010"),
+                ("S02", "SH020"),
+            ],
+        )
+
+    def test_get_playlist_task_id_for_entity(self):
+        """
+        An entity contributes its most recently reviewed task, among the ones
+        holding a preview.
+        """
+        self.generate_fixture_preview_files()
+        layout_task = self.generate_fixture_shot_task(
+            "Layout", task_type_id=self.task_type_layout.id
+        )
+        layout_preview = self.generate_fixture_preview_file(
+            task_id=layout_task.id
+        )
+        self.task.update(
+            {
+                "last_preview_file_id": self.preview_file_2.id,
+                "last_comment_date": datetime(2026, 1, 1),
+            }
+        )
+        layout_task.update(
+            {
+                "last_preview_file_id": layout_preview.id,
+                "last_comment_date": datetime(2026, 2, 1),
+            }
+        )
+        # More recent, but nothing to show.
+        self.generate_fixture_shot_task(
+            "Animation", task_type_id=self.task_type_animation.id
+        ).update({"last_comment_date": datetime(2026, 3, 1)})
+
+        self.assertEqual(
+            playlists_service.get_playlist_task_id_for_entity(
+                str(self.shot.id)
+            ),
+            str(layout_task.id),
+        )
+
+    def test_get_playlist_task_id_for_entity_without_preview(self):
+        """
+        An entity no task of which holds a preview contributes nothing.
+        """
+        self.generate_fixture_preview_files()
+
+        self.assertIsNone(
+            playlists_service.get_playlist_task_id_for_entity(
+                str(self.shot.id)
+            )
+        )
 
     def test_generate_temp_playlist_with_edit_task(self):
         self.generate_fixture_edit_task()
@@ -360,6 +443,59 @@ class PlaylistsServiceTestCase(ApiDBTestCase):
         job = playlists_service.end_build_job(playlist, job, False)
         self.assertEqual(job["status"], "failed")
         self.assertIsNotNone(job["ended_at"])
+
+    def test_end_build_job_message(self):
+        """
+        The optional message explains a degraded build to whoever looks
+        at the job afterwards.
+        """
+        playlist = self.generate_fixture_playlists()
+        job = playlists_service.start_build_job(playlist)
+        job = playlists_service.end_build_job(
+            playlist, job, True, message="built by the concat filter"
+        )
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["message"], "built by the concat filter")
+
+    def test_build_playlist_movie_file_reports_the_fallback(self):
+        """
+        When the concat demuxer rejects the previews and the re-encoding
+        concat filter builds the movie instead, the job says so rather
+        than reporting a plain success (cgwire/kitsu#2184).
+        """
+        playlist = self.generate_fixture_playlists()
+        job = playlists_service.start_build_job(playlist)
+        params = EncodingParameters(width=1920, height=1080, fps="25.00")
+
+        def fake_build(mode, tmp_file_paths, movie_file_path, **kwargs):
+            if mode is movie.concat_demuxer:
+                return {
+                    "success": False,
+                    "message": "a.mp4 has an unexpected video/audio "
+                    "stream number (3)",
+                }
+            open(movie_file_path, "w").close()
+            return {"success": True}
+
+        with (
+            patch.object(
+                playlists_service, "playlist_previews", return_value=[]
+            ),
+            patch.object(
+                playlists_service,
+                "retrieve_playlist_tmp_files",
+                return_value=[("/tmp/a.mp4", "a.mp4")],
+            ),
+            patch.object(movie, "build_playlist_movie", fake_build),
+            patch.object(playlists_service.file_store, "add_movie"),
+        ):
+            job = playlists_service.build_playlist_movie_file(
+                playlist, job, [], params, False, False
+            )
+
+        self.assertEqual(job["status"], "succeeded")
+        self.assertIn("concat filter", job["message"])
+        self.assertIn("stream number", job["message"])
 
     def test_an_entity_is_added_with_the_preview_it_names(self):
         self.generate_fixture_preview_files()

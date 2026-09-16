@@ -7,6 +7,7 @@ from flask_jwt_extended import verify_jwt_in_request
 from tests.base import ApiDBTestCase
 
 from zou.app import app
+from zou.app.models.entity import Entity
 from zou.app.services import (
     comments_service,
     permissions_service,
@@ -330,6 +331,134 @@ class PersonAccessTestCase(PermissionsTestCase):
                 permissions_service.check_day_off_access(
                     {"person_id": self.a_user("artist")["id"]}
                 )
+            )
+
+    def test_check_day_off_read_access_of_the_person_and_the_admins(self):
+        with self.as_role("artist") as artist:
+            self.assertTrue(
+                permissions_service.check_day_off_read_access(artist["id"])
+            )
+            with self.denied():
+                permissions_service.check_day_off_read_access(self.user["id"])
+
+        with self.as_role("admin"):
+            self.assertTrue(
+                permissions_service.check_day_off_read_access(
+                    self.a_user("artist")["id"]
+                )
+            )
+
+    def test_check_day_off_read_access_of_a_manager(self):
+        """
+        A manager reads the leave of the team of their productions, with
+        its description, and nothing of anybody else: not of a person
+        outside their team, and nothing at all while on no team.
+        """
+        artist = self.join_team(self.a_user("artist"))
+        outsider = self.a_user("client")
+
+        with self.as_role("manager"):
+            with self.denied():
+                permissions_service.check_day_off_read_access(artist["id"])
+
+        self.join_team(self.a_user("manager"))
+
+        with self.as_role("manager"):
+            self.assertTrue(
+                permissions_service.check_day_off_read_access(artist["id"])
+            )
+            with self.denied():
+                permissions_service.check_day_off_read_access(outsider["id"])
+
+    def test_check_day_off_read_access_of_a_supervisor(self):
+        """
+        A supervisor reads the dates of the leave of the persons they
+        supervise on their productions: everybody on the team while
+        attached to no department, the persons sharing one of theirs
+        otherwise.
+        """
+        artist = self.join_team(self.a_user("artist"))
+        supervisor = self.join_team(self.a_user("supervisor"))
+        animation = str(self.department_animation.id)
+
+        with self.as_role("supervisor"):
+            self.assertFalse(
+                permissions_service.check_day_off_read_access(artist["id"])
+            )
+
+        persons_service.add_to_department(animation, supervisor["id"])
+
+        with self.as_role("supervisor"):
+            with self.denied():
+                permissions_service.check_day_off_read_access(artist["id"])
+
+        persons_service.add_to_department(animation, artist["id"])
+
+        with self.as_role("supervisor"):
+            self.assertFalse(
+                permissions_service.check_day_off_read_access(artist["id"])
+            )
+
+    def test_check_day_off_read_access_follows_the_project_role(self):
+        """
+        The role held on the production is the one that counts: an artist
+        made manager of it reads its leave, a manager demoted on it does
+        not.
+        """
+        artist = self.join_team(self.a_user("artist"), role="manager")
+        manager = self.join_team(self.a_user("manager"), role="user")
+
+        with self.as_role("artist"):
+            self.assertTrue(
+                permissions_service.check_day_off_read_access(manager["id"])
+            )
+
+        with self.as_role("manager"):
+            with self.denied():
+                permissions_service.check_day_off_read_access(artist["id"])
+
+    def test_get_day_off_readable_person_ids(self):
+        """
+        The same rule, read at once for a listing: everybody for an admin,
+        oneself for an artist, the team with description for a manager,
+        the supervised part of it, dates only, for a supervisor.
+        """
+        artist = self.join_team(self.a_user("artist"))
+        manager = self.join_team(self.a_user("manager"))
+        supervisor = self.join_team(self.a_user("supervisor"))
+        self.a_user("client")
+        animation = str(self.department_animation.id)
+        persons_service.add_to_department(animation, artist["id"])
+        persons_service.add_to_department(animation, supervisor["id"])
+        persons_service.add_to_department(
+            str(self.department.id), manager["id"]
+        )
+
+        with self.as_role("admin"):
+            self.assertIsNone(
+                permissions_service.get_day_off_readable_person_ids()
+            )
+
+        with self.as_role("artist"):
+            self.assertEqual(
+                permissions_service.get_day_off_readable_person_ids(),
+                {artist["id"]: True},
+            )
+
+        with self.as_role("manager"):
+            self.assertEqual(
+                permissions_service.get_day_off_readable_person_ids(),
+                {
+                    artist["id"]: True,
+                    manager["id"]: True,
+                    supervisor["id"]: True,
+                },
+            )
+
+        with self.as_role("supervisor"):
+            self.assertEqual(
+                permissions_service.get_day_off_readable_person_ids(),
+                {artist["id"]: False, supervisor["id"]: True},
             )
 
     def test_check_person_is_not_bot(self):
@@ -1079,3 +1208,42 @@ class CommentAccessTestCase(PermissionsTestCase):
         with self.as_role("client"):
             with self.denied():
                 permissions_service.check_comment_access(comment_id)
+
+
+class EntitiesBelongToProjectTestCase(ApiDBTestCase):
+    """
+    The routes taking a project and entity ids refuse an entity of another
+    project, before touching anything.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.generate_fixture_project_status()
+        self.generate_fixture_project()
+        self.generate_fixture_asset_type()
+        self.generate_fixture_episode()
+        self.generate_fixture_sequence()
+        self.generate_fixture_shot()
+        self.generate_fixture_asset()
+        self.project_id = str(self.project.id)
+
+    def test_the_entities_of_the_project_come_back(self):
+        entities = permissions_service.check_entities_belong_to_project(
+            [str(self.shot.id), str(self.asset.id)], self.project_id
+        )
+        self.assertEqual(
+            [entity["id"] for entity in entities],
+            [str(self.shot.id), str(self.asset.id)],
+        )
+
+    def test_an_entity_of_another_project_is_refused(self):
+        other_project = self.generate_fixture_project("Other")
+        stranger = Entity.create(
+            name="STRANGER",
+            project_id=other_project.id,
+            entity_type_id=self.shot_type.id,
+        )
+        with self.assertRaises(permissions.PermissionDenied):
+            permissions_service.check_entities_belong_to_project(
+                [str(self.shot.id), str(stranger.id)], self.project_id
+            )

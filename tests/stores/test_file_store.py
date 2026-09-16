@@ -1,6 +1,10 @@
 import unittest
 import os
 
+from unittest.mock import Mock
+
+import pytest
+from flask_fs.errors import FileNotFound
 
 from zou.app import app
 from zou.app.stores import file_store
@@ -60,3 +64,189 @@ class FileStoreTestCase(unittest.TestCase):
         file_name = "thumbnails-63e453f1-9655-49ad-acba-ff7f27c49e9d"
         result_path = file_store.path(file_store.pictures, file_name)
         self.assertTrue(os.path.exists(result_path))
+
+
+class ReadGeneratorTestCase(unittest.TestCase):
+    """
+    flask_fs turns every backend error into FileNotFound because its
+    existence check swallows them. The read generator has to keep a
+    missing object and a transient failure apart: only the former is
+    worth skipping the download retry for.
+    """
+
+    def make_bucket(self, error):
+        bucket = Mock()
+        bucket.backend.encryptor = None
+        bucket.backend.read_chunks.side_effect = error
+        return bucket
+
+    def test_missing_object_is_a_file_not_found(self):
+        error = Exception("Object GET failed")
+        error.http_status = 404
+        with pytest.raises(FileNotFound):
+            file_store.make_read_generator(self.make_bucket(error), "key")
+
+    def test_transient_failure_is_left_alone(self):
+        error = Exception("Service Unavailable")
+        error.http_status = 503
+        with pytest.raises(Exception, match="Service Unavailable"):
+            file_store.make_read_generator(self.make_bucket(error), "key")
+
+    def test_missing_local_file_is_a_file_not_found(self):
+        app.app_context().push()
+        with pytest.raises(FileNotFound):
+            list(file_store.open_picture("thumbnails", "does-not-exist"))
+
+
+class SwiftPooledReadTestCase(unittest.TestCase):
+    """
+    Against flask_fs's real SwiftBackend: a Mock backend grows whatever
+    attribute it is asked for, which is how a read through a `conn`
+    attribute the pinned flask-fs2 no longer has reached production.
+    The pool holds one connection, so a slot that is not handed back
+    fails the next read.
+    """
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import swiftclient
+        from flask_fs.backends.swift import SwiftBackend
+
+        self.calls = []
+        self.missing = False
+        test = self
+
+        class FakeConnection:
+            def __init__(self, **kwargs):
+                pass
+
+            def get_object(self, container, key, **kwargs):
+                test.calls.append((container, key, kwargs))
+                if test.missing:
+                    raise swiftclient.ClientException(
+                        "not found", http_status=404
+                    )
+                return (
+                    {
+                        "content-length": "4",
+                        "content-range": "bytes 10-13/100",
+                    },
+                    iter([b"ab", b"cd"]),
+                )
+
+            def close(self):
+                pass
+
+        def start(patcher):
+            # TestCase.enterContext only exists from Python 3.11.
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        start(patch("swiftclient.Connection", FakeConnection))
+        backend = SwiftBackend(
+            "movies",
+            SimpleNamespace(
+                user="user",
+                key="key",
+                authurl="url",
+                pool_size=1,
+                pool_timeout=0.1,
+            ),
+        )
+        start(
+            patch.object(
+                file_store, "movies", SimpleNamespace(backend=backend)
+            )
+        )
+        start(patch.object(file_store.config, "FS_BACKEND", "swift"))
+
+    def test_range_read_goes_through_the_pool(self):
+        length, content_range, generator = file_store.read_movie_range(
+            "lowdef", "1", "bytes=10-13"
+        )
+        self.assertEqual(b"".join(generator), b"abcd")
+        self.assertEqual((length, content_range), (4, "bytes 10-13/100"))
+        self.assertEqual(self.calls[0][2]["headers"], {"Range": "bytes=10-13"})
+        # The slot came back: the cache fill reads through the same pool.
+        self.assertEqual(
+            b"".join(file_store.open_movie("lowdef", "1")), b"abcd"
+        )
+
+    def test_missing_movie_hands_the_slot_back(self):
+        self.missing = True
+        with pytest.raises(FileNotFound):
+            file_store.read_movie_range("lowdef", "1", "bytes=0-1")
+        self.missing = False
+        _, _, generator = file_store.read_movie_range(
+            "lowdef", "1", "bytes=10-13"
+        )
+        self.assertEqual(b"".join(generator), b"abcd")
+
+
+class ReadMovieRangeTestCase(unittest.TestCase):
+    def test_s3_range_is_forwarded_and_the_body_closed(self):
+        from unittest.mock import patch
+
+        body = Mock()
+        body.iter_chunks.return_value = iter([b"ab", b"cd"])
+        s3_object = Mock()
+        s3_object.get.return_value = {
+            "Body": body,
+            "ContentLength": 4,
+            "ContentRange": "bytes 10-13/100",
+        }
+        movies = Mock()
+        movies.backend.encryptor = None
+        movies.backend.bucket.Object.return_value = s3_object
+
+        with (
+            patch.object(file_store, "movies", movies),
+            patch.object(file_store.config, "FS_BACKEND", "s3"),
+        ):
+            self.assertTrue(file_store.can_stream_movie_ranges())
+            length, content_range, generator = file_store.read_movie_range(
+                "lowdef", "1", "bytes=10-13"
+            )
+            self.assertEqual(b"".join(generator), b"abcd")
+
+        movies.backend.bucket.Object.assert_called_once_with("lowdef-1")
+        s3_object.get.assert_called_once_with(Range="bytes=10-13")
+        self.assertEqual((length, content_range), (4, "bytes 10-13/100"))
+        body.close.assert_called_once()
+
+    def test_missing_object_is_file_not_found(self):
+        from unittest.mock import patch
+
+        class ClientError(Exception):
+            response = {"Error": {"Code": "NoSuchKey"}}
+
+        movies = Mock()
+        movies.backend.bucket.Object.return_value.get.side_effect = (
+            ClientError()
+        )
+        with (
+            patch.object(file_store, "movies", movies),
+            patch.object(file_store.config, "FS_BACKEND", "s3"),
+        ):
+            with pytest.raises(FileNotFound):
+                file_store.read_movie_range("lowdef", "1", "bytes=0-1")
+
+    def test_refused_range_is_a_416(self):
+        from unittest.mock import patch
+        from werkzeug.exceptions import RequestedRangeNotSatisfiable
+
+        class ClientError(Exception):
+            response = {"Error": {"Code": "InvalidRange"}}
+
+        movies = Mock()
+        movies.backend.bucket.Object.return_value.get.side_effect = (
+            ClientError()
+        )
+        with (
+            patch.object(file_store, "movies", movies),
+            patch.object(file_store.config, "FS_BACKEND", "s3"),
+        ):
+            with pytest.raises(RequestedRangeNotSatisfiable):
+                file_store.read_movie_range("lowdef", "1", "bytes=999-")

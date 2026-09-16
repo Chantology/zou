@@ -29,7 +29,9 @@ logger = setup_logging()
 def main():
     """
     Normalize given preview file in two videos, generate thumbnails
-    and tiles.
+    and tiles. The payload can narrow the encoding down: skip_high_def
+    drops the 28M version, skip_normalization drops both and leaves only
+    the thumbnails and the tile to build.
     We assume that this script is launched in the context of a Nomad
     job. Arguments are retrieved from a payload file at JSON format.
     Nevertheless this script can be run directly from the command line.
@@ -41,33 +43,45 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         preview_file_id = config["preview_file_id"]
         file_path = _fetch_movie_file(storage, tmpdir, preview_file_id)
-        high_def_path, low_def_path, err = _run_normalize_movie(
-            config, file_path
-        )
+        if config.get("skip_normalization", False):
+            # Nothing to encode: the job still runs to build the thumbnails
+            # and the tile, and Zou serves the source movie as is.
+            logger.info("Skip normalization, no movie encoded")
+            high_def_path, low_def_path, err = None, None, None
+        else:
+            high_def_path, low_def_path, err = _run_normalize_movie(
+                config, file_path
+            )
 
         if err is None:
-            put_file_to_storage(
-                storage,
-                high_def_path,
-                make_key("previews", preview_file_id),
-            )
-            put_file_to_storage(
-                storage,
-                low_def_path,
-                make_key("lowdef", preview_file_id),
-            )
-            logger.info(f"Normalization succeeded {high_def_path}")
+            if high_def_path is not None:
+                put_file_to_storage(
+                    storage,
+                    high_def_path,
+                    make_key("previews", preview_file_id),
+                )
+            if low_def_path is not None:
+                put_file_to_storage(
+                    storage,
+                    low_def_path,
+                    make_key("lowdef", preview_file_id),
+                )
+            # Thumbnails and tile are built from the movie that was actually
+            # produced: the low def one when the high def is skipped, the
+            # downloaded source when nothing was encoded at all.
+            movie_path = high_def_path or low_def_path or file_path
+            logger.info(f"Normalization succeeded {movie_path}")
 
             if version >= 2:
                 pictures_storage = get_storage(config, "pictures")
                 _generate_and_upload_thumbnails(
                     pictures_storage,
-                    high_def_path,
+                    movie_path,
                     preview_file_id,
                 )
                 _generate_and_upload_tile(
                     pictures_storage,
-                    high_def_path,
+                    movie_path,
                     preview_file_id,
                 )
         else:
@@ -89,7 +103,11 @@ def _fetch_movie_file(storage, outdir, preview_file_id):
 
 def _run_normalize_movie(config, movie_path):
     return normalize_movie(
-        movie_path, config["fps"], config["width"], config["height"]
+        movie_path,
+        config["fps"],
+        config["width"],
+        config["height"],
+        skip_high_def=config.get("skip_high_def", False),
     )
 
 

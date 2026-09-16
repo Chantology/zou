@@ -31,11 +31,17 @@ from zou.app.services.exception import (
     PreviewBackgroundFileNotFoundException,
 )
 
-from zou.app.utils import cache, fields, events, query as query_utils
+from zou.app.stores import file_store, queue_store
+
+from zou.app.utils import cache, fields, fs, events, query as query_utils
 
 from sqlalchemy import desc, func
 from sqlalchemy.exc import StatementError, IntegrityError
 from sqlalchemy.sql.expression import and_
+
+MOVIE_PREFIXES = ["previews", "lowdef", "source"]
+LOWDEF_MOVIE_PREFIXES = ["lowdef", "previews", "source"]
+MOVIE_PREFIXES_KEY = "movie_prefixes"
 
 
 def clear_preview_file_cache(preview_file_id):
@@ -806,10 +812,11 @@ def get_preview_file(preview_file_id):
 def get_preview_file_for_access(preview_file_id):
     """
     Lightweight lookup used by picture/movie download endpoints that only
-    need to check permissions and emit a Last-Modified header. Avoids
-    loading the JSONB annotations and data columns, which can weigh
-    several MB on long shots and dominate query time when the response
-    is a static file served from disk.
+    need to check permissions, emit a Last-Modified header and know which
+    versions of a movie are stored. Avoids loading the JSONB annotations
+    and data columns, which can weigh several MB on long shots and
+    dominate query time when the response is a static file served from
+    disk.
     """
     try:
         row = (
@@ -818,6 +825,7 @@ def get_preview_file_for_access(preview_file_id):
                 PreviewFile.task_id,
                 PreviewFile.updated_at,
                 PreviewFile.extension,
+                PreviewFile.data[MOVIE_PREFIXES_KEY].label("movie_prefixes"),
             )
             .filter_by(id=preview_file_id)
             .first()
@@ -831,7 +839,129 @@ def get_preview_file_for_access(preview_file_id):
         "task_id": str(row.task_id) if row.task_id else None,
         "updated_at": fields.serialize_value(row.updated_at),
         "extension": row.extension,
+        # None for a preview file that predates the record, a list of
+        # prefixes otherwise.
+        "movie_prefixes": (
+            row.movie_prefixes
+            if isinstance(row.movie_prefixes, list)
+            else None
+        ),
     }
+
+
+def get_preview_file_data(preview_file):
+    """
+    The data column is a bare JSONB that a PUT can set to anything: only
+    a dict is usable.
+    """
+    return preview_file.data if isinstance(preview_file.data, dict) else {}
+
+
+def _is_movie_stored(prefix, preview_file_id):
+    """
+    Tell whether the movie of given preview file sits under given prefix.
+    The local download cache is looked at first: a warm cache means the
+    movie routes will not hit the object storage at all.
+    """
+    if config.FS_BACKEND != "local":
+        file_path = fs.get_cache_file_path(
+            config, prefix, preview_file_id, "mp4"
+        )
+        if not fs.is_invalid_file(file_path):
+            return True
+    try:
+        return file_store.exists_movie(prefix, preview_file_id)
+    except Exception:
+        return False
+
+
+def probe_movie_prefixes(preview_file_id):
+    """
+    Ask the storage which versions of the movie exist, for a preview file
+    that predates the record written at storage time. Costs one round
+    trip per prefix.
+    """
+    return [
+        prefix
+        for prefix in MOVIE_PREFIXES
+        if _is_movie_stored(prefix, preview_file_id)
+    ]
+
+
+def get_movie_prefixes(stored_prefixes, lowdef):
+    """
+    Return the storage prefixes to try for a movie, best first: the ones
+    holding it in the order the route prefers, then the others as a
+    tail, since a record can lag behind a movie that was re-encoded or
+    copied over.
+    """
+    prefixes = LOWDEF_MOVIE_PREFIXES if lowdef else MOVIE_PREFIXES
+    return [prefix for prefix in prefixes if prefix in stored_prefixes] + [
+        prefix for prefix in prefixes if prefix not in stored_prefixes
+    ]
+
+
+def record_movie_prefixes_later(
+    preview_file_id, served_prefix, recorded_prefixes
+):
+    """
+    Probe the storage for the versions of a movie and write them on the
+    preview file, on the job queue when there is one: the probe costs one
+    round trip per version, which the first byte of a cold movie should
+    not wait for. Without a queue it runs inline, as it always did.
+    """
+    if config.ENABLE_JOB_QUEUE:
+        queue_store.job_queue.enqueue(
+            probe_and_record_movie_prefixes,
+            args=(preview_file_id, served_prefix, recorded_prefixes),
+            job_timeout=60,
+        )
+    else:
+        probe_and_record_movie_prefixes(
+            preview_file_id, served_prefix, recorded_prefixes
+        )
+
+
+def probe_and_record_movie_prefixes(
+    preview_file_id, served_prefix, recorded_prefixes
+):
+    """
+    A probe that misses the version just served failed itself and is not
+    recorded. Runs from a job as well as from a request: it brings its
+    own app context when there is none.
+    """
+    from flask import has_app_context
+    from zou.app import app
+
+    def run():
+        stored_prefixes = probe_movie_prefixes(preview_file_id)
+        if served_prefix in stored_prefixes and set(stored_prefixes) != set(
+            recorded_prefixes or []
+        ):
+            record_movie_prefixes(preview_file_id, stored_prefixes)
+
+    if has_app_context():
+        run()
+    else:
+        with app.app_context():
+            run()
+
+
+def record_movie_prefixes(preview_file_id, prefixes):
+    """
+    Remember on the preview file which versions of its movie are stored,
+    without notifying anyone: nothing the clients see changes.
+    """
+    preview_file = get_preview_file_raw(preview_file_id)
+    preview_file.update(
+        {
+            "data": {
+                **get_preview_file_data(preview_file),
+                MOVIE_PREFIXES_KEY: prefixes,
+            }
+        }
+    )
+    clear_preview_file_cache(preview_file_id)
 
 
 def get_preview_files_for_task(task_id):

@@ -21,6 +21,7 @@ from zou.app.mixin import ArgsMixin
 from zou.app.utils import (
     fields,
     flask_utils,
+    http_cache,
     permissions,
     query,
     validation,
@@ -282,74 +283,6 @@ class SceneResource(MethodView):
             )
         shots_service.remove_scene(scene_id)
         return "", 204
-
-
-class ShotsResource(MethodView):
-    @jwt_required()
-    def get(self):
-        """
-        Get shots
-        ---
-        tags:
-        - Shots
-        description: Get shots with optional filters. Use query params like
-          project_id, sequence_id or parent_id to filter results.
-        parameters:
-          - in: query
-            name: sequence_id
-            required: False
-            type: string
-            format: uuid
-            example: a24a6ea4-ce75-4665-a070-57453082c25
-          - in: query
-            name: project_id
-            required: False
-            type: string
-            format: uuid
-            example: a24a6ea4-ce75-4665-a070-57453082c25
-          - in: query
-            name: parent_id
-            required: False
-            type: string
-            format: uuid
-            example: a24a6ea4-ce75-4665-a070-57453082c25
-        responses:
-            200:
-                description: All shot entries
-                content:
-                  application/json:
-                    schema:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          id:
-                            type: string
-                            format: uuid
-                            example: a24a6ea4-ce75-4665-a070-57453082c25
-                          name:
-                            type: string
-                            example: SH010
-                          project_id:
-                            type: string
-                            format: uuid
-                            example: b24a6ea4-ce75-4665-a070-57453082c25
-                          parent_id:
-                            type: string
-                            format: uuid
-                            example: c24a6ea4-ce75-4665-a070-57453082c25
-        """
-        criterions = query.get_query_criterions_from_request(request)
-        if "sequence_id" in criterions:
-            sequence = shots_service.get_sequence(criterions["sequence_id"])
-            criterions["project_id"] = sequence["project_id"]
-            criterions["parent_id"] = sequence["id"]
-            del criterions["sequence_id"]
-        permissions_service.check_project_access(
-            criterions.get("project_id", None)
-        )
-        permissions_service.scope_criterions_to_vendor(criterions)
-        return shots_service.get_shots(criterions)
 
 
 class AllShotsResource(MethodView):
@@ -1082,8 +1015,14 @@ class ShotsAndTasksResource(MethodView):
             criterions.get("project_id", None)
         )
         permissions_service.scope_criterions_to_vendor(criterions)
+        etag = entities_service.get_project_board_etag(criterions)
+        if etag is not None and http_cache.is_fresh(etag):
+            return http_cache.not_modified(etag)
         if not stream and not compact:
-            return shots_service.get_shots_and_tasks(criterions)
+            body = shots_service.get_shots_and_tasks(criterions)
+            if etag is None:
+                return body
+            return http_cache.json_response(body, etag)
 
         rows = shots_service.prepare_shots_and_tasks(
             criterions, compact=compact
@@ -1092,7 +1031,14 @@ class ShotsAndTasksResource(MethodView):
         if compact:
             header["shot_fields"] = shots_service.SHOTS_AND_TASKS_SHOT_FIELDS
             header["task_fields"] = shots_service.SHOTS_AND_TASKS_TASK_FIELDS
-        return flask_utils.rows_response(header, rows, stream)
+        response = flask_utils.rows_response(header, rows, stream)
+        if etag is not None:
+            # rows_response returns a plain dict when not streaming.
+            if stream:
+                http_cache.mark(response, etag)
+            else:
+                response = http_cache.json_response(response, etag)
+        return response
 
 
 class SceneAndTasksResource(MethodView):
@@ -1220,7 +1166,7 @@ class SequenceAndTasksResource(MethodView):
         if permissions.has_vendor_permissions():
             # Vendors only see sequences holding a shot with a task assigned
             # to them, and only their own tasks on those sequences.
-            if criterions.get("episode_id"):
+            if criterions.get("episode_id") not in (None, "all"):
                 sequences = shots_service.get_sequences_for_episode(
                     criterions["episode_id"], only_assigned=True
                 )

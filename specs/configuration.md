@@ -63,7 +63,62 @@ All configuration is in `zou/app/config.py`, read from environment variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PREVIEW_SAVE_SOURCE_FILE` | false | Keep the uploaded source movie alongside the normalized preview |
+| `PREVIEW_SAVE_SOURCE_FILE` | false | Keep the uploaded source movie alongside the normalized preview. Ignored when the normalization runs on a remote worker: it reads the source from the object storage, so the source is uploaded there whatever this says (a warning is logged at startup) |
+| `SKIP_NORMALIZATION_FULL` | false | Skip the movie normalization: the uploaded movie is stored as is, once, under `source` or `previews` (see below) |
+| `SKIP_NORMALIZATION_HIGHDEF` | false | Skip only the high def (28M) encoding: the low def version is built and is the only movie stored |
+| `SYNC_SOURCE_MOVIE_FILES` | false | Replicate the source movies when syncing from another instance |
+
+With a Nomad setup (`ENABLE_JOB_QUEUE_REMOTE` + `JOB_QUEUE_NOMAD_NORMALIZE_JOB`),
+the remote job is dispatched even when nothing has to be encoded
+(`SKIP_NORMALIZATION_FULL`, or `?normalize=false` on the upload): it is what
+builds the thumbnails and the tile, and Zou has no ffmpeg to fall back on.
+The job then encodes and uploads nothing, and the uploaded source stays the
+only movie — so the source is pushed to the object storage whatever
+`PREVIEW_SAVE_SOURCE_FILE` says, since the job reads it from there.
+
+The movie routes serve whichever version exists: `/movies/originals/` tries
+`previews`, `lowdef` then `source`, and `/movies/low/` tries `lowdef`,
+`previews` then `source`. So a setup skipping part of the normalization keeps
+working without any client change. The source is served as `video/mp4`
+whatever its real container, without the `+faststart` flag: browsers only
+play it back when the upload is already a web-ready h264 mp4.
+`/movies/source/preview-files/<id>.mp4` serves the source and only the source,
+without that fallback.
+
+### Skipping the normalization means syncing the sources
+
+Where the movie lands depends on both the skip settings and the setup:
+
+| | `source-<id>` | `previews-<id>` | `lowdef-<id>` |
+|---|---|---|---|
+| normalization on | only with `PREVIEW_SAVE_SOURCE_FILE` | encoded 28M | encoded 6M |
+| `SKIP_NORMALIZATION_HIGHDEF` | only with `PREVIEW_SAVE_SOURCE_FILE` | no | encoded 6M |
+| `SKIP_NORMALIZATION_FULL`, source kept | the uploaded movie | no | no |
+| `SKIP_NORMALIZATION_FULL`, source not kept | no | the uploaded movie | no |
+
+"Source kept" means `PREVIEW_SAVE_SOURCE_FILE=true`, or a remote (Nomad)
+setup, which always pushes the source to the object storage since that is
+where the worker reads it from. When the source is there, writing the same
+bytes under `previews-<id>` would just be a second copy, and the movie routes
+fall back on the source anyway. When it is not, the uploaded movie is stored
+under `previews-<id>` instead, so the preview file always has a movie.
+
+`PREVIEW_SAVE_SOURCE_FILE=true` alongside `SKIP_NORMALIZATION_FULL` is
+therefore a sound setup — it is what a Nomad deployment does anyway — and it
+is the way to keep a single stored movie on a local one.
+
+Anything replicating a preview file has to carry the `source` prefix along,
+or a copy made from a source-only instance ends up with no movie at all:
+
+- **Between two instances**: set `SYNC_SOURCE_MOVIE_FILES=true` on the
+  instance that pulls, when the other one runs `SKIP_NORMALIZATION_FULL` and
+  keeps its source. It adds `/movies/source/preview-files/<id>.mp4` to the files
+  fetched by `zou sync-full-files` and friends; without it the sync only asks
+  for `previews` and `lowdef`, which that instance does not have. Leave it off
+  otherwise: every missing source costs three retries and an error line in
+  the logs (the 404 is not counted as a sync failure).
+- **Inside one instance**: `copy_preview_file_in_another_one` (used by the
+  comment automations) copies the `source` prefix too, unconditionally.
 
 ## LDAP / SAML
 
