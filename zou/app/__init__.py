@@ -21,7 +21,7 @@ from zou.app import swagger as swagger_module
 from zou.app.swagger import configure_openapi_route
 from zou.app.stores import auth_tokens_store, config_store, file_store
 from zou.app.indexer import indexing
-from zou.app.services.exception import (
+from zou.app.exceptions import (
     ModelWithRelationsDeletionException,
     PersonNotFoundException,
     PreviewProcessingFailedException,
@@ -29,10 +29,10 @@ from zou.app.services.exception import (
     WrongIdFormatException,
     WrongParameterException,
     WrongTaskTypeForEntityException,
-    UnactiveUserException,
+    InactiveUserException,
 )
 
-from zou.app.utils import cache, fs, monitoring
+from zou.app.utils import cache, fs, media_slots, monitoring
 from zou.app.utils.flask_utils import (
     ParsedUserAgent,
     ORJSONProvider,
@@ -233,7 +233,7 @@ def configure_auth(app):
             current_app.logger.error(
                 f"Identity {identity.id} is not active anymore"
             )
-            raise UnactiveUserException
+            raise InactiveUserException
 
     @jwt.token_in_blocklist_loader
     def check_if_token_is_revoked(_, payload):
@@ -308,6 +308,11 @@ def create_app(config_object=config):
     app.config.from_object(config_object)
 
     monitoring.init_monitoring(app)
+    media_slots.init_media_slots(
+        app,
+        app.config.get("MEDIA_MAX_CONCURRENT_REQUESTS", 0),
+        app.config.get("MEDIA_SLOT_WAIT_TIMEOUT", 30),
+    )
 
     db.init_app(app)
     migrate.init_app(app, db)

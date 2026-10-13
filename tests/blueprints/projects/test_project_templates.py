@@ -93,6 +93,46 @@ class ProjectTemplatesRoutesTestCase(ApiDBTestCase):
             expected={"priority": 3},
         )
 
+    def test_task_type_link_bitrates_route(self):
+        template = self._create_template()
+        base = f"/data/project-templates/{template['id']}/task-types"
+        task_type_id = str(self.task_type_modeling.id)
+        self.post(
+            base,
+            {
+                "task_type_id": task_type_id,
+                "priority": 1,
+                "hd_bitrate_compression": 20,
+                "ld_bitrate_compression": 4,
+            },
+        )
+        # A priority-only call, as the reorder does, keeps the bitrates.
+        link = self.post(base, {"task_type_id": task_type_id, "priority": 2})
+        self.assertEqual(
+            (
+                link["priority"],
+                link["hd_bitrate_compression"],
+                link["ld_bitrate_compression"],
+            ),
+            (2, 20, 4),
+        )
+        listed = self.get(base)[0]
+        self.assertEqual(listed["hd_bitrate_compression"], 20)
+        self.post(
+            base,
+            {"task_type_id": task_type_id, "hd_bitrate_compression": 0},
+            400,
+        )
+        self.post(
+            base,
+            {
+                "task_type_id": task_type_id,
+                "hd_bitrate_compression": 10,
+                "ld_bitrate_compression": 12,
+            },
+            400,
+        )
+
     def test_task_type_reorder_route(self):
         template = self._create_template()
         tt1 = str(self.task_type_modeling.id)
@@ -113,6 +153,19 @@ class ProjectTemplatesRoutesTestCase(ApiDBTestCase):
         by_type = {link["task_type_id"]: link["priority"] for link in result}
         self.assertEqual(by_type[tt2], 1)
         self.assertEqual(by_type[tt1], 2)
+
+    def test_reorder_routes_refuse_a_body_without_the_id_list(self):
+        template = self.post("/data/project-templates", {"name": "Empty"})
+        self.post(
+            f"/actions/project-templates/{template['id']}/task-types/reorder",
+            {"task_type_ids": "not-a-list"},
+            400,
+        )
+        self.post(
+            f"/actions/project-templates/{template['id']}/task-statuses/reorder",
+            [],
+            400,
+        )
 
     def test_task_status_reorder_route_preserves_roles(self):
         template = self._create_template()

@@ -61,6 +61,9 @@ class ProjectTaskTypeLink(db.Model, BaseMixin, SerializerMixin):
         index=True,
     )
     priority = db.Column(db.Integer, default=None)
+    # Movie encoding bitrates in Mbit/s, null inherits from the project.
+    hd_bitrate_compression = db.Column(db.Integer, nullable=True)
+    ld_bitrate_compression = db.Column(db.Integer, nullable=True)
 
     __table_args__ = (
         db.UniqueConstraint(
@@ -178,8 +181,9 @@ class Project(db.Model, BaseMixin, SerializerMixin):
     is_single_preview_per_revision = db.Column(db.Boolean(), default=False)
     is_frame_in_numbering = db.Column(db.Boolean(), default=False)
     revision_padding = db.Column(db.Integer, default=0, nullable=False)
-    hd_bitrate_compression = db.Column(db.Integer, default=28)
-    ld_bitrate_compression = db.Column(db.Integer, default=6)
+    # Movie encoding bitrates in Mbit/s, null inherits from the config.
+    hd_bitrate_compression = db.Column(db.Integer, nullable=True)
+    ld_bitrate_compression = db.Column(db.Integer, nullable=True)
 
     project_status_id = db.Column(
         UUIDType(binary=False), db.ForeignKey("project_status.id"), index=True
@@ -198,6 +202,7 @@ class Project(db.Model, BaseMixin, SerializerMixin):
             "production_schedule_version.id",
             name="project_from_schedule_version_id_fkey",
             use_alter=True,
+            ondelete="SET NULL",
         ),
         index=True,
         nullable=True,

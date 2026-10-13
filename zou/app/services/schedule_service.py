@@ -7,6 +7,7 @@ from sqlalchemy import Text, and_, cast, delete, func, literal, select, update
 from zou.app.models.entity import Entity
 from zou.app.models.entity_type import EntityType
 from zou.app.models.milestone import Milestone
+from zou.app.models.project import Project
 from zou.app.models.schedule_item import ScheduleItem
 from zou.app.models.schedule_segment import ScheduleSegment
 from zou.app.models.task import Task, TaskPersonLink
@@ -24,14 +25,16 @@ from zou.app.services import (
     shots_service,
     tasks_service,
     projects_service,
+    entity_types_service,
 )
 from zou.app import db
 
-from zou.app.services.exception import (
+from zou.app.exceptions import (
     ProductionScheduleVersionNotFoundException,
     ScheduleItemNotFoundException,
     WrongParameterException,
 )
+from zou.app.models.person import Person
 
 
 def clear_production_schedule_version_cache(production_schedule_version_id):
@@ -164,7 +167,7 @@ def get_episodes_schedule_items(project_id, task_type_id, episode_id=None):
     exists for a given episode, it creates one. When an episode is given,
     results are restricted to that episode.
     """
-    episode_type = shots_service.get_episode_type()
+    episode_type = entity_types_service.get_episode_type()
     episodes = shots_service.get_episodes_for_project(project_id)
     if episode_id is not None:
         episodes = [
@@ -202,7 +205,7 @@ def get_sequences_schedule_items(project_id, task_type_id, episode_id=None):
             if sequence["parent_id"] == str(episode_id)
         ]
     sequence_map = base_service.get_model_map_from_array(sequences)
-    sequence_type = shots_service.get_sequence_type()
+    sequence_type = entity_types_service.get_sequence_type()
 
     query = _entity_schedule_items_query(
         project_id, task_type_id, sequence_type["id"]
@@ -234,7 +237,7 @@ def get_edits_schedule_items(project_id, task_type_id, episode_id=None):
             edit for edit in edits if edit["parent_id"] == str(episode_id)
         ]
     edit_map = base_service.get_model_map_from_array(edits)
-    edit_type = edits_service.get_edit_type()
+    edit_type = entity_types_service.get_edit_type()
 
     query = _entity_schedule_items_query(
         project_id, task_type_id, edit_type["id"]
@@ -423,6 +426,40 @@ def get_production_schedule_version_task_links(
         )
 
     return fields.serialize_models(query.all(), relations=relations)
+
+
+def detach_production_schedule_version(production_schedule_version_id):
+    """
+    Clear the references other rows keep to given production schedule
+    version before it is deleted, memoized copies included: the versions
+    copied from it and the project it was applied to.
+    """
+    derived_ids = [
+        str(row.id)
+        for row in ProductionScheduleVersion.query.with_entities(
+            ProductionScheduleVersion.id
+        )
+        .filter_by(production_schedule_from=production_schedule_version_id)
+        .all()
+    ]
+    if derived_ids:
+        ProductionScheduleVersion.query.filter(
+            ProductionScheduleVersion.id.in_(derived_ids)
+        ).update({"production_schedule_from": None}, synchronize_session=False)
+        db.session.commit()
+        for derived_id in derived_ids:
+            clear_production_schedule_version_cache(derived_id)
+
+    project_ids = [
+        str(row.id)
+        for row in Project.query.with_entities(Project.id)
+        .filter_by(from_schedule_version_id=production_schedule_version_id)
+        .all()
+    ]
+    for project_id in project_ids:
+        projects_service.update_project(
+            project_id, {"from_schedule_version_id": None}
+        )
 
 
 def update_production_schedule_version(production_schedule_version_id, data):
@@ -690,3 +727,103 @@ def apply_production_schedule_version_to_production(
     )
 
     return {"success": True, "task_count": len(updated_tasks)}
+
+
+def get_persons_tasks_dates(
+    project_id=None, project_ids=None, busy_project_ids=None
+):
+    """
+    For schedule usages, for each active person, it returns the first start
+    date of all tasks of assigned to this person and the last end date.
+
+    Scoping (project_id takes precedence over project_ids):
+    - project_id, when set, scopes the lookup to that single project and
+      nothing else. It is honoured directly -- including closed projects --
+      instead of being intersected with the open-project list, otherwise a
+      closed but legitimately accessible project would yield an empty result.
+      The caller is responsible for checking access to it.
+    - project_ids restricts the lookup to a set of projects. Only None (not an
+      empty list) triggers the studio-wide fallback below. An empty list is
+      honoured as-is and matches no project, which is how a manager with no
+      project gets an empty result -- the guard must stay an `is None` identity
+      test and never become `if not project_ids:`, otherwise such a manager
+      would leak the studio-wide view.
+    - busy_project_ids lists the projects the caller must not see in detail:
+      tasks found there come back as anonymous busy_periods, merged date
+      pairs carrying no production or task information, so a schedule can
+      show that a person is taken without leaking what they work on. A
+      person with only such tasks is listed with null
+      min_date / max_date.
+    """
+    if project_id is not None:
+        # An explicit, access-checked project scopes the lookup directly. This
+        # short-circuits the open-project fallback so a closed project the
+        # caller may legitimately see is not filtered out to an empty result.
+        project_ids = [project_id]
+    elif project_ids is None:
+        # Studio-wide fallback. Note this is the project-scoped helper, not
+        # user_service.get_open_project_ids() which is limited to the current
+        # user's projects.
+        project_ids = projects_service.open_project_ids()
+    query = (
+        Task.query.with_entities(
+            Person.id, func.min(Task.start_date), func.max(Task.due_date)
+        )
+        .filter(Person.active)
+        .filter(Task.project_id.in_(project_ids))
+        .group_by(Person.id)
+        .join(Task.assignees)
+    )
+
+    entries = {}
+    for person_id, min_date, max_date in query.all():
+        entries[str(person_id)] = {
+            "person_id": str(person_id),
+            "min_date": fields.serialize_value(min_date),
+            "max_date": fields.serialize_value(max_date),
+            "busy_periods": [],
+        }
+
+    if busy_project_ids:
+        busy_query = (
+            Task.query.with_entities(Person.id, Task.start_date, Task.due_date)
+            .filter(Person.active)
+            .filter(Task.project_id.in_(busy_project_ids))
+            .filter(Task.start_date != None)
+            .filter(Task.due_date != None)
+            .join(Task.assignees)
+        )
+        intervals_by_person = {}
+        for person_id, start_date, due_date in busy_query.all():
+            intervals_by_person.setdefault(str(person_id), []).append(
+                (start_date, due_date)
+            )
+        for person_id, intervals in intervals_by_person.items():
+            if person_id not in entries:
+                entries[person_id] = {
+                    "person_id": person_id,
+                    "min_date": None,
+                    "max_date": None,
+                    "busy_periods": [],
+                }
+            entries[person_id]["busy_periods"] = [
+                {"start_date": str(start), "end_date": str(end)}
+                for start, end in _merge_date_intervals(intervals)
+            ]
+
+    return list(entries.values())
+
+
+def _merge_date_intervals(intervals):
+    """
+    Merge overlapping (start, end) pairs into the smallest set of disjoint
+    intervals, so anonymous busy periods reveal neither the task count nor
+    how the underlying work is split.
+    """
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]

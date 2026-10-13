@@ -25,6 +25,9 @@ class ProjectTemplateTaskTypeLink(db.Model, BaseMixin, SerializerMixin):
         index=True,
     )
     priority = db.Column(db.Integer, default=None)
+    # Movie encoding bitrates in Mbit/s, copied to the project links.
+    hd_bitrate_compression = db.Column(db.Integer, nullable=True)
+    ld_bitrate_compression = db.Column(db.Integer, nullable=True)
 
     __table_args__ = (
         db.UniqueConstraint(
@@ -140,8 +143,8 @@ class ProjectTemplate(db.Model, BaseMixin, SerializerMixin):
     is_frame_in_numbering = db.Column(db.Boolean(), default=False)
     revision_padding = db.Column(db.Integer, default=0, nullable=False)
     homepage = db.Column(db.String(80), default="assets")
-    hd_bitrate_compression = db.Column(db.Integer, default=28)
-    ld_bitrate_compression = db.Column(db.Integer, default=6)
+    hd_bitrate_compression = db.Column(db.Integer, nullable=True)
+    ld_bitrate_compression = db.Column(db.Integer, nullable=True)
     file_tree = db.Column(JSONB)
     data = db.Column(JSONB)
 

@@ -55,6 +55,35 @@ class AuthTestCase(ApiDBTestCase):
         response = self.app.get("auth/authenticated", headers=headers)
         self.assertEqual(response.status_code, code)
 
+    def forge_nested_token(self, nested_part):
+        import base64
+
+        def encode(data):
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        depth = 100000
+        nested = b"[" * depth + b"]" * depth
+        header = b'{"alg":"HS256","typ":"JWT"}'
+        payload = b'{"sub":"x"}'
+        if nested_part == "header":
+            header = nested
+        else:
+            payload = nested
+        return f"{encode(header)}.{encode(payload)}.{encode(b'signature')}"
+
+    def test_deeply_nested_token_is_rejected(self):
+        # A RecursionError escaping PyJWT turned into a 500, without any
+        # authentication: CVE-2026-102265 on the header,
+        # CVE-2026-101918 on the payload, which flask-jwt-extended
+        # decodes before checking the signature.
+        for nested_part in ("header", "payload"):
+            token = self.forge_nested_token(nested_part)
+            response = self.app.get(
+                "auth/authenticated",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertIn(response.status_code, (401, 422), nested_part)
+
     def test_login(self):
         tokens = self.post("auth/login", self.credentials, 200)
 
@@ -141,6 +170,7 @@ class AuthTestCase(ApiDBTestCase):
         }
         result = self.post("auth/login", credentials, 400)
         self.assertFalse(result["login"])
+        self.assertEqual(result["message"], "Wrong email or password.")
         self.assertIsNotAuthenticated(result, 422)
 
     def _fail_login(self, times):
@@ -167,6 +197,10 @@ class AuthTestCase(ApiDBTestCase):
         self._fail_login(5)
         result = self.post("auth/login", self.credentials, 400)
         self.assertTrue(result["too_many_failed_login_attemps"])
+        self.assertEqual(
+            result["message"],
+            "Too many failed login attempts, retry in a minute.",
+        )
 
         self._expire_the_lockout_window()
         self._fail_login(1)
@@ -1075,10 +1109,28 @@ class TOTPTestCase(ApiDBTestCase):
         self.app.get("auth/logout", headers=headers)
 
         # Login without TOTP should fail
-        self.post("auth/login", self.credentials, 400)
+        result = self.post("auth/login", self.credentials, 400)
+        self.assertEqual(
+            result["message"],
+            "A two-factor authentication code is required.",
+        )
+
+        # Login with a wrong TOTP should fail
+        totp = pyotp.TOTP(otp_secret)
+        result = self.post(
+            "auth/login",
+            {
+                "email": self.credentials["email"],
+                "password": self.credentials["password"],
+                "totp": str((int(totp.now()) + 1) % 1000000).zfill(6),
+            },
+            400,
+        )
+        self.assertEqual(
+            result["message"], "Wrong two-factor authentication code."
+        )
 
         # Login with TOTP
-        totp = pyotp.TOTP(otp_secret)
         response = self.post(
             "auth/login",
             {
@@ -1221,7 +1273,7 @@ class ChangePasswordErrorsTestCase(ApiDBTestCase):
     def test_change_password_while_locked_out(self):
         """
         check_auth applies the login lockout here too, and the handler
-        used to let TooMuchLoginFailedAttemps out as a 500.
+        used to let TooManyLoginFailedAttempts out as a 500.
         """
         _, headers = self.login()
         Person.get(self.person_dict["id"]).update(

@@ -4,54 +4,26 @@ import pytest
 
 from unittest import mock
 
-from tests.base import ApiDBTestCase
 
 from zou.app import app
 from zou.app.models.person import Person, SENSITIVE_FIELDS
 from zou.app.stores import auth_tokens_store
 from zou.app.services import persons_service, auth_service
-from zou.app.services.exception import (
+from zou.app.exceptions import (
     MissingOTPException,
     NoAuthStrategyConfigured,
-    TooMuchLoginFailedAttemps,
+    TooManyLoginFailedAttempts,
     TwoFactorAuthenticationNotEnabledException,
-    UnactiveUserException,
+    InactiveUserException,
     UserCantConnectDueToNoFallback,
     WrongPasswordException,
     WrongUserException,
 )
 from zou.app.utils import auth, date_helpers
+from tests.services.cases import AuthTestCase
 
 # The whole point of these is what a password check accepts and refuses.
 pytestmark = pytest.mark.real_bcrypt
-
-
-class AuthTestCase(ApiDBTestCase):
-    """
-    One person with a known password. Holds no test of its own.
-    """
-
-    def setUp(self):
-        super().setUp()
-
-        self.generate_fixture_person()
-        self.person.update(
-            {"password": auth.encrypt_password("secretpassword")}
-        )
-        self.person_id = str(self.person.id)
-        self.email = self.person.email
-
-    def tearDown(self):
-        # Some tests switch the auth strategy; restore the default so the
-        # leak does not break login tests run after this file.
-        app.config["AUTH_STRATEGY"] = "auth_local_classic"
-        super().tearDown()
-
-    def authenticate(self, password="secretpassword", **kwargs):
-        return auth_service.check_auth(app, self.email, password, **kwargs)
-
-    def failed_attemps(self):
-        return Person.get(self.person_id).login_failed_attemps
 
 
 class CheckAuthTestCase(AuthTestCase):
@@ -119,7 +91,7 @@ class CheckAuthTestCase(AuthTestCase):
     def test_an_inactive_person(self):
         self.person.update({"active": False})
         persons_service.clear_person_cache()
-        self.assertRaises(UnactiveUserException, self.authenticate)
+        self.assertRaises(InactiveUserException, self.authenticate)
 
     def test_no_password_auth_strategy(self):
         app.config["AUTH_STRATEGY"] = "auth_local_no_password"
@@ -159,7 +131,7 @@ class CheckAuthTestCase(AuthTestCase):
         persons_service.clear_person_cache()
 
         self.assertRaises(WrongPasswordException, self.authenticate, "wrong")
-        self.assertRaises(UnactiveUserException, self.authenticate)
+        self.assertRaises(InactiveUserException, self.authenticate)
 
     def test_unactive_user_is_checked_before_the_second_factor(self):
         # Below the 2FA block, the check would let MissingOTPException go
@@ -169,7 +141,7 @@ class CheckAuthTestCase(AuthTestCase):
         self.person.update({"active": False, "totp_enabled": True})
         persons_service.clear_person_cache()
 
-        self.assertRaises(UnactiveUserException, self.authenticate)
+        self.assertRaises(InactiveUserException, self.authenticate)
 
     def test_check_auth_works_on_a_copy(self):
         """
@@ -224,7 +196,7 @@ class LoginLockoutTestCase(AuthTestCase):
         Put the account at the ceiling, as a burst of wrong passwords
         would.
         """
-        auth_service.update_login_failed_attemps(
+        auth_service.update_login_failed_attempts(
             self.person_id,
             auth_service.MAX_LOGIN_FAILED_ATTEMPS,
             date_helpers.get_utc_now_datetime(),
@@ -245,7 +217,7 @@ class LoginLockoutTestCase(AuthTestCase):
         self.lock()
         persons_service.clear_person_cache()
         # Even with the right password: that is the whole point.
-        self.assertRaises(TooMuchLoginFailedAttemps, self.authenticate)
+        self.assertRaises(TooManyLoginFailedAttempts, self.authenticate)
 
     def test_an_elapsed_window_reopens_the_account(self):
         """
@@ -254,7 +226,7 @@ class LoginLockoutTestCase(AuthTestCase):
         address could hold it shut at one request a minute, the owner
         included. Rearming costs a fresh burst.
         """
-        auth_service.update_login_failed_attemps(
+        auth_service.update_login_failed_attempts(
             self.person_id,
             auth_service.MAX_LOGIN_FAILED_ATTEMPS,
             date_helpers.get_utc_now_datetime()
@@ -274,7 +246,7 @@ class LoginLockoutTestCase(AuthTestCase):
         account for another minute, so anyone knowing an address holds it
         closed at one request a minute.
         """
-        auth_service.update_login_failed_attemps(
+        auth_service.update_login_failed_attempts(
             self.person_id,
             auth_service.MAX_LOGIN_FAILED_ATTEMPS,
             date_helpers.get_utc_now_datetime()
@@ -292,7 +264,7 @@ class LoginLockoutTestCase(AuthTestCase):
         """
         The rows that predate the date column carry a count and no date.
         """
-        auth_service.update_login_failed_attemps(
+        auth_service.update_login_failed_attempts(
             self.person_id, auth_service.MAX_LOGIN_FAILED_ATTEMPS
         )
         Person.get(self.person_id).update({"last_login_failed": None})
@@ -306,8 +278,8 @@ class LoginLockoutTestCase(AuthTestCase):
         self,
     ):
         moment = date_helpers.get_utc_now_datetime()
-        auth_service.update_login_failed_attemps(self.person_id, 3, moment)
-        auth_service.update_login_failed_attemps(self.person_id, 0)
+        auth_service.update_login_failed_attempts(self.person_id, 3, moment)
+        auth_service.update_login_failed_attempts(self.person_id, 0)
         self.assertIsNotNone(Person.get(self.person_id).last_login_failed)
 
 
@@ -639,11 +611,6 @@ class TokenTestCase(AuthTestCase):
         # be nagged about.
         app.config["AUTH_STRATEGY"] = "auth_local_no_password"
         self.assertFalse(auth_service.is_default_password(app, "default"))
-
-    def test_generate_reset_token(self):
-        token = auth_service.generate_reset_token()
-        self.assertEqual(len(token), 64)
-        self.assertNotEqual(token, auth_service.generate_reset_token())
 
     def test_generate_recovery_codes(self):
         codes = auth_service.generate_recovery_codes()

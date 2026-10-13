@@ -1,7 +1,7 @@
 """Add schedule segments
 
 Revision ID: a70fd7b4e2e1
-Revises: a3f7c2d91b45
+Revises: b5d2e8f3a1c7
 Create Date: 2026-08-14 15:42:39.367915
 
 """
@@ -13,7 +13,7 @@ import uuid
 
 # revision identifiers, used by Alembic.
 revision = "a70fd7b4e2e1"
-down_revision = "a3f7c2d91b45"
+down_revision = "b5d2e8f3a1c7"
 branch_labels = None
 depends_on = None
 

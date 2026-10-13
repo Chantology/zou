@@ -10,8 +10,10 @@ from zou.app.services import (
     notifications_service,
     persons_service,
     projects_service,
-    shots_service,
     tasks_service,
+    entity_types_service,
+    task_types_service,
+    time_spents_service,
 )
 
 
@@ -284,7 +286,7 @@ class CreateTasksTestCase(TaskTestCase):
         foreign_sequence = Entity.create(
             name="Foreign",
             project_id=other_project.id,
-            entity_type_id=shots_service.get_sequence_type()["id"],
+            entity_type_id=entity_types_service.get_sequence_type()["id"],
         )
 
         path = (
@@ -317,7 +319,7 @@ class TaskAssignationTestCase(TaskTestCase):
         self.put(f"/actions/tasks/{task_id}/assign", data, 200)
         task = self.get(f"data/tasks/{task_id}")
         self.assertEqual(task["assignees"][0], person_id)
-        notifications = notifications_service.get_last_notifications(
+        notifications = notifications_service.get_recent_notifications(
             "assignation"
         )
         self.assertEqual(len(notifications), 1)
@@ -347,7 +349,7 @@ class TaskAssignationTestCase(TaskTestCase):
         self.assertEqual(len(task["assignees"]), 1)
         task = tasks_service.get_task(shot_task_id, relations=True)
         self.assertEqual(len(task["assignees"]), 1)
-        notifications = notifications_service.get_last_notifications()
+        notifications = notifications_service.get_recent_notifications()
         self.assertEqual(len(notifications), 2)
 
     def test_multiple_task_assign_artist(self):
@@ -425,7 +427,7 @@ class TaskAssignationTestCase(TaskTestCase):
         self.assertEqual(task["assignees"], [person_id])
         # The generic update emits the same task:assign event as the assign
         # route, so the assignation notification is created too.
-        notifications = notifications_service.get_last_notifications(
+        notifications = notifications_service.get_recent_notifications(
             "assignation"
         )
         self.assertEqual(len(notifications), 1)
@@ -521,9 +523,13 @@ class TaskCommentTestCase(TaskTestCase):
         self.assertEqual(comments[0]["text"], data["comment"])
         self.assertEqual(comments[0]["person_id"], self.user["id"])
 
-        notifications = notifications_service.get_last_notifications("comment")
+        notifications = notifications_service.get_recent_notifications(
+            "comment"
+        )
         self.assertEqual(len(notifications), 1)
-        notifications = notifications_service.get_last_notifications("mention")
+        notifications = notifications_service.get_recent_notifications(
+            "mention"
+        )
         self.assertEqual(notifications, [])
 
         data = {
@@ -531,13 +537,17 @@ class TaskCommentTestCase(TaskTestCase):
             "comment": "comment test @John Did2",
         }
         comment = self.post(path, data)
-        notifications = notifications_service.get_last_notifications("comment")
+        notifications = notifications_service.get_recent_notifications(
+            "comment"
+        )
         self.assertEqual(len(notifications), 2)
-        notifications = notifications_service.get_last_notifications("mention")
+        notifications = notifications_service.get_recent_notifications(
+            "mention"
+        )
         self.assertEqual(len(notifications), 1)
 
         news_list = news_service.get_last_news_for_project(
-            project_id=self.project_id
+            news_service.NewsFilters(project_id=self.project_id)
         )
         self.assertEqual(len(news_list["data"]), 2)
 
@@ -560,13 +570,17 @@ class TaskCommentTestCase(TaskTestCase):
             "comment": "comment test @John Doe",
         }
         comment = self.post(path, data)
-        notifications = notifications_service.get_last_notifications("mention")
+        notifications = notifications_service.get_recent_notifications(
+            "mention"
+        )
         self.assertEqual(len(notifications), 1)
 
         path = f"/data/comments/{comment['id']}"
         data = {"text": "comment test @John Did2 @John Did3"}
         comment = self.put(path, data)
-        notifications = notifications_service.get_last_notifications("mention")
+        notifications = notifications_service.get_recent_notifications(
+            "mention"
+        )
         self.assertEqual(len(notifications), 2)
 
     def test_comment_task_with_retake(self):
@@ -725,7 +739,7 @@ class TaskListingTestCase(TaskTestCase):
         tasks = self.get(f"/data/persons/{self.person.id}/done-tasks")
         self.assertEqual(tasks, [])
 
-        done_status = tasks_service.get_or_create_status(
+        done_status = task_types_service.get_or_create_task_status(
             "Done", "done", "#22d160", is_done=True
         )
         tasks_service.update_task(
@@ -734,6 +748,16 @@ class TaskListingTestCase(TaskTestCase):
 
         tasks = self.get(f"/data/persons/{self.person.id}/done-tasks")
         self.assertEqual(len(tasks), 1)
+
+    def test_a_vendor_reads_their_own_tasks(self):
+        # The vendor branch called persons_service.get, which does not
+        # exist: a vendor asking for their own tasks got a 500.
+        self.generate_fixture_user_vendor()
+        self.log_in_vendor()
+        vendor_id = self.user_vendor["id"]
+        self.assertEqual(self.get(f"/data/persons/{vendor_id}/tasks"), [])
+        self.assertEqual(self.get(f"/data/persons/{vendor_id}/done-tasks"), [])
+        self.get(f"/data/persons/{self.person.id}/tasks", 403)
 
     def test_get_related_tasks_for_person(self):
         task_type_id = str(self.task_type_animation.id)
@@ -1142,7 +1166,7 @@ class TaskListingTestCase(TaskTestCase):
         revived; the route adds the task access guard.
         """
         task = self.generate_fixture_task()
-        tasks_service.create_or_update_time_spent(
+        time_spents_service.create_or_update_time_spent(
             str(task.id), str(self.person_id), "2026-08-05", 3600
         )
         path = f"/actions/tasks/{task.id}/time-spents"
