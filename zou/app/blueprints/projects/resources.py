@@ -800,7 +800,7 @@ class ProductionScheduleSegmentsResource(MethodView, ArgsMixin):
               type: string
               format: uuid
             description: Project unique identifier
-            example: a24a6ea4-ce75-4665-a070-57453082c25
+            example: a24a6ea4-ce75-4665-a070-57453082c250
           - in: query
             name: task_type_id
             required: false

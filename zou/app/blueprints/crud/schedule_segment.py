@@ -134,11 +134,11 @@ class ScheduleSegmentsResource(BaseModelsResource):
                   task_id:
                     type: string
                     format: uuid
-                    example: a24a6ea4-ce75-4665-a070-57453082c25
+                    example: a24a6ea4-ce75-4665-a070-57453082c250
                   schedule_item_id:
                     type: string
                     format: uuid
-                    example: b24a6ea4-ce75-4665-a070-57453082c25
+                    example: b24a6ea4-ce75-4665-a070-57453082c250
         responses:
             201:
               description: Schedule segment created successfully
@@ -194,7 +194,7 @@ class ScheduleSegmentResource(BaseModelResource):
             schema:
               type: string
               format: uuid
-            example: a24a6ea4-ce75-4665-a070-57453082c25
+            example: a24a6ea4-ce75-4665-a070-57453082c250
         responses:
             200:
               description: Schedule segment retrieved successfully
@@ -219,7 +219,7 @@ class ScheduleSegmentResource(BaseModelResource):
             schema:
               type: string
               format: uuid
-            example: a24a6ea4-ce75-4665-a070-57453082c25
+            example: a24a6ea4-ce75-4665-a070-57453082c250
         requestBody:
           required: true
           content:
@@ -261,7 +261,7 @@ class ScheduleSegmentResource(BaseModelResource):
             schema:
               type: string
               format: uuid
-            example: a24a6ea4-ce75-4665-a070-57453082c25
+            example: a24a6ea4-ce75-4665-a070-57453082c250
         responses:
             204:
               description: Schedule segment deleted successfully
