@@ -1,75 +1,83 @@
-from flasgger import swag_from
 import hmac
 import secrets
 
-from flask import request, jsonify, current_app, redirect, make_response
+from babel.dates import format_datetime
+from flask import current_app, jsonify, make_response, redirect, request
 from flask.views import MethodView
 from flask_jwt_extended import (
-    jwt_required,
     create_access_token,
+    get_jwt,
+    jwt_required,
     set_access_cookies,
     set_refresh_cookies,
     unset_jwt_cookies,
     unset_refresh_cookies,
-    get_jwt,
 )
-
+from saml2 import client_base, entity
 from sqlalchemy.exc import OperationalError, TimeoutError
-from babel.dates import format_datetime
-from saml2 import entity, client_base
 
 from zou.app import app, config
-from zou.app.mixin import ArgsMixin
-from zou.app.utils import auth, emails, permissions, date_helpers, validation
 from zou.app.blueprints.auth.schemas import (
     AppLoginCodeSchema,
     AppLoginTokenSchema,
-    LoginSchema,
     ChangePasswordSchema,
+    EmailOtpSchema,
+    FidoRegisterSchema,
+    FidoUnregisterSchema,
+    LoginSchema,
     ResetPasswordSchema,
     SendPasswordResetSchema,
     TotpSchema,
     TwoFactorAuthSchema,
-    EmailOtpSchema,
-    FidoRegisterSchema,
-    FidoUnregisterSchema,
 )
-from zou.app.utils.email_i18n import get_email_translation
-from zou.app.models.person import normalize_country
-from zou.app.services import (
-    persons_service,
-    auth_service,
-    events_service,
-    templates_service,
-    organisation_service,
-)
-
-from zou.app.utils.flask_utils import is_from_browser
-from zou.app.utils.saml import get_subject_from_ava, saml_client_for
-from zou.app.utils import oidc
-
-from zou.app.stores import auth_tokens_store
 from zou.app.exceptions import (
     EmailOTPAlreadyEnabledException,
     EmailOTPNotEnabledException,
     FIDONoPreregistrationException,
     FIDONotEnabledException,
     FIDOServerException,
+    InactiveUserException,
     MissingOTPException,
     NoAuthStrategyConfigured,
     NoTwoFactorAuthenticationEnabled,
-    SSOIdentityMismatchException,
     PersonInProtectedAccounts,
     PersonNotFoundException,
+    SSOIdentityMismatchException,
+    StudioNotFoundException,
     TooManyLoginFailedAttempts,
     TOTPAlreadyEnabledException,
     TOTPNotEnabledException,
-    InactiveUserException,
     UserCantConnectDueToNoFallback,
     WrongOTPException,
     WrongPasswordException,
     WrongUserException,
 )
+from zou.app.mixin import ArgsMixin
+from zou.app.models.person import normalize_country
+from zou.app.services import (
+    auth_service,
+    events_service,
+    organisation_service,
+    persons_service,
+    task_types_service,
+    templates_service,
+)
+from zou.app.stores import auth_tokens_store
+from zou.app.utils import (
+    auth,
+    date_helpers,
+    emails,
+    fields,
+    oidc,
+    permissions,
+    validation,
+)
+from zou.app.utils.email_i18n import get_email_translation
+from zou.app.utils.flask_utils import is_from_browser
+from zou.app.utils.openapi import load_specs, swag_from
+from zou.app.utils.saml import get_subject_from_ava, saml_client_for
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 SSO_REFUSED = {
     "error": "This account cannot be signed in to with this identity. "
@@ -102,7 +110,7 @@ def _build_2fa_registration_response(response_data, user_id):
 class AuthenticatedResource(MethodView):
 
     @jwt_required()
-    @swag_from("openapi/AuthenticatedResource_get.yml")
+    @swag_from(SPECS["AuthenticatedResource_get"])
     def get(self):
         """
         Check authentication status
@@ -125,7 +133,7 @@ class LogoutResource(MethodView):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/LogoutResource_get.yml")
+    @swag_from(SPECS["LogoutResource_get"])
     def get(self):
         """
         Logout user
@@ -207,7 +215,7 @@ def _build_login_response(user, email):
 
 class LoginResource(MethodView, ArgsMixin):
 
-    @swag_from("openapi/LoginResource_post.yml")
+    @swag_from(SPECS["LoginResource_post"])
     def post(self):
         """
         Login user
@@ -349,7 +357,7 @@ class LoginResource(MethodView, ArgsMixin):
 class RefreshTokenResource(MethodView):
     @jwt_required(refresh=True)
     @permissions.require_person
-    @swag_from("openapi/RefreshTokenResource_get.yml")
+    @swag_from(SPECS["RefreshTokenResource_get"])
     def get(self):
         """
         Refresh access token
@@ -391,7 +399,7 @@ class AppLoginCodeResource(MethodView):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/AppLoginCodeResource_post.yml")
+    @swag_from(SPECS["AppLoginCodeResource_post"])
     def post(self):
         """
         Mint a browser login code
@@ -407,7 +415,7 @@ class AppLoginCodeResource(MethodView):
 
 class AppLoginTokenResource(MethodView):
 
-    @swag_from("openapi/AppLoginTokenResource_post.yml")
+    @swag_from(SPECS["AppLoginTokenResource_post"])
     def post(self):
         """
         Trade a browser login code for tokens
@@ -443,7 +451,7 @@ class ChangePasswordResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/ChangePasswordResource_post.yml")
+    @swag_from(SPECS["ChangePasswordResource_post"])
     def post(self):
         """
         Change user password
@@ -531,7 +539,7 @@ class ChangePasswordResource(MethodView, ArgsMixin):
 
 class ResetPasswordResource(MethodView, ArgsMixin):
 
-    @swag_from("openapi/ResetPasswordResource_put.yml")
+    @swag_from(SPECS["ResetPasswordResource_put"])
     def put(self):
         """
         Reset password with token
@@ -572,7 +580,7 @@ class ResetPasswordResource(MethodView, ArgsMixin):
         except InactiveUserException:
             return {"error": True, "message": "User is inactive."}, 400
 
-    @swag_from("openapi/ResetPasswordResource_post.yml")
+    @swag_from(SPECS["ResetPasswordResource_post"])
     def post(self):
         """
         Request password reset
@@ -630,7 +638,7 @@ class TOTPResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/TOTPResource_put.yml")
+    @swag_from(SPECS["TOTPResource_put"])
     def put(self):
         """
         Pre-enable TOTP
@@ -651,7 +659,7 @@ class TOTPResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/TOTPResource_post.yml")
+    @swag_from(SPECS["TOTPResource_post"])
     def post(self):
         """
         Enable TOTP
@@ -684,7 +692,7 @@ class TOTPResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/TOTPResource_delete.yml")
+    @swag_from(SPECS["TOTPResource_delete"])
     def delete(self):
         """
         Disable TOTP
@@ -725,7 +733,7 @@ class TOTPResource(MethodView, ArgsMixin):
 
 class EmailOTPResource(MethodView, ArgsMixin):
 
-    @swag_from("openapi/EmailOTPResource_get.yml")
+    @swag_from(SPECS["EmailOTPResource_get"])
     def get(self):
         """
         Send email OTP
@@ -758,7 +766,7 @@ class EmailOTPResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/EmailOTPResource_put.yml")
+    @swag_from(SPECS["EmailOTPResource_put"])
     def put(self):
         """
         Pre-enable email OTP
@@ -776,7 +784,7 @@ class EmailOTPResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/EmailOTPResource_post.yml")
+    @swag_from(SPECS["EmailOTPResource_post"])
     def post(self):
         """
         Enable email OTP
@@ -810,7 +818,7 @@ class EmailOTPResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/EmailOTPResource_delete.yml")
+    @swag_from(SPECS["EmailOTPResource_delete"])
     def delete(self):
         """
         Disable email OTP
@@ -855,7 +863,7 @@ class FIDOResource(MethodView, ArgsMixin):
     challenge for a FIDO device.
     """
 
-    @swag_from("openapi/FIDOResource_get.yml")
+    @swag_from(SPECS["FIDOResource_get"])
     def get(self):
         """
         Get FIDO challenge
@@ -892,7 +900,7 @@ class FIDOResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/FIDOResource_put.yml")
+    @swag_from(SPECS["FIDOResource_put"])
     def put(self):
         """
         Pre-register FIDO device
@@ -903,7 +911,7 @@ class FIDOResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/FIDOResource_post.yml")
+    @swag_from(SPECS["FIDOResource_post"])
     def post(self):
         """
         Register FIDO device
@@ -937,7 +945,7 @@ class FIDOResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/FIDOResource_delete.yml")
+    @swag_from(SPECS["FIDOResource_delete"])
     def delete(self):
         """
         Unregister FIDO device
@@ -960,7 +968,11 @@ class FIDOResource(MethodView, ArgsMixin):
             return {"success": True}
         except (WrongOTPException, MissingOTPException):
             return (
-                {"error": True, "message": "Wrong OTP."},
+                {
+                    "error": True,
+                    "message": "OTP verification failed.",
+                    "wrong_OTP": True,
+                },
                 400,
             )
         except FIDONotEnabledException:
@@ -974,7 +986,7 @@ class RecoveryCodesResource(MethodView, ArgsMixin):
 
     @jwt_required()
     @permissions.require_person
-    @swag_from("openapi/RecoveryCodesResource_put.yml")
+    @swag_from(SPECS["RecoveryCodesResource_put"])
     def put(self):
         """
         Generate recovery codes
@@ -999,7 +1011,7 @@ class RecoveryCodesResource(MethodView, ArgsMixin):
                 person["id"]
             )
             return {"otp_recovery_codes": otp_recovery_codes}
-        except WrongOTPException:
+        except (WrongOTPException, MissingOTPException):
             return (
                 {
                     "error": True,
@@ -1037,8 +1049,23 @@ def link_sso_person(protocol, issuer, subject, email, create_info):
     return user
 
 
+def is_saml_person_info_new(person, person_info):
+    """
+    Tell whether the attributes of an assertion differ from what given
+    person holds. The departments are a list of ids, in any order.
+    """
+    return any(
+        (
+            sorted(person.get(key) or []) != sorted(value or [])
+            if key == "departments"
+            else person.get(key) != value
+        )
+        for key, value in person_info.items()
+    )
+
+
 class SAMLSSOResource(MethodView, ArgsMixin):
-    @swag_from("openapi/SAMLSSOResource_post.yml")
+    @swag_from(SPECS["SAMLSSOResource_post"])
     def post(self):
         """
         SAML SSO login
@@ -1056,7 +1083,8 @@ class SAMLSSOResource(MethodView, ArgsMixin):
             k: (
                 " ".join(v)
                 if isinstance(v, list)
-                and k in ["first_name", "last_name", "country"]
+                and k
+                in ["first_name", "last_name", "country", "phone", "studio_id"]
                 else v
             )
             for k, v in authn_response.ava.items()
@@ -1081,6 +1109,22 @@ class SAMLSSOResource(MethodView, ArgsMixin):
                 person_info["country"] = normalized
             else:
                 del person_info["country"]
+        # The studio follows the country: an empty value clears it, a
+        # malformed one is dropped without a lookup, and an unknown one once
+        # the lookup fails.
+        if "studio_id" in person_info:
+            studio_id = person_info["studio_id"]
+            if not studio_id:
+                person_info["studio_id"] = None
+            elif not fields.is_valid_id(studio_id):
+                del person_info["studio_id"]
+            else:
+                try:
+                    person_info["studio_id"] = task_types_service.get_studio(
+                        studio_id
+                    )["id"]
+                except StudioNotFoundException:
+                    del person_info["studio_id"]
         try:
             user = self.get_person(authn_response, email, person_info)
         except (
@@ -1094,12 +1138,12 @@ class SAMLSSOResource(MethodView, ArgsMixin):
                 extra={"email": email},
             )
             return SSO_REFUSED, 400
-        for k, v in person_info.items():
-            if user.get(k) != v:
-                persons_service.update_person(
-                    user["id"], person_info, bypass_protected_accounts=True
-                )
-                break
+        if is_saml_person_info_new(
+            persons_service.get_person(user["id"]), person_info
+        ):
+            persons_service.update_person(
+                user["id"], person_info, bypass_protected_accounts=True
+            )
 
         response = make_response(
             redirect(f"{config.DOMAIN_PROTOCOL}://{config.DOMAIN_NAME}")
@@ -1170,7 +1214,7 @@ class SAMLSSOResource(MethodView, ArgsMixin):
 
 class SAMLLoginResource(MethodView, ArgsMixin):
 
-    @swag_from("openapi/SAMLLoginResource_get.yml")
+    @swag_from(SPECS["SAMLLoginResource_get"])
     def get(self):
         """
         SAML SSO login redirect
@@ -1202,7 +1246,7 @@ class SAMLLoginResource(MethodView, ArgsMixin):
 
 
 class OIDCLoginResource(MethodView, ArgsMixin):
-    @swag_from("openapi/OIDCLoginResource_get.yml")
+    @swag_from(SPECS["OIDCLoginResource_get"])
     def get(self):
         """
         OIDC SSO login redirect
@@ -1218,7 +1262,7 @@ class OIDCLoginResource(MethodView, ArgsMixin):
 
 
 class OIDCCallbackResource(MethodView, ArgsMixin):
-    @swag_from("openapi/OIDCCallbackResource_get.yml")
+    @swag_from(SPECS["OIDCCallbackResource_get"])
     def get(self):
         """
         OIDC SSO callback

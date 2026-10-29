@@ -1,27 +1,23 @@
 import traceback
 
-from flask import Flask, jsonify, current_app, request
+from babel.core import UnknownLocaleError
 from flasgger import Swagger
+from flask import Flask, current_app, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
-from flask_sqlalchemy import SQLAlchemy
-from flask_migrate import Migrate
 from flask_mail import Mail
-
-from werkzeug.exceptions import HTTPException
+from flask_migrate import Migrate
+from flask_sqlalchemy import SQLAlchemy
 from jwt import ExpiredSignatureError
-from babel.core import UnknownLocaleError
 from meilisearch.errors import (
     MeilisearchApiError,
     MeilisearchCommunicationError,
 )
+from werkzeug.exceptions import HTTPException
 
-from zou.app import config
-from zou.app import swagger as swagger_module
-from zou.app.swagger import configure_openapi_route
-from zou.app.stores import auth_tokens_store, config_store, file_store
-from zou.app.indexer import indexing
+from zou.app import config, swagger as swagger_module
 from zou.app.exceptions import (
+    InactiveUserException,
     ModelWithRelationsDeletionException,
     PersonNotFoundException,
     PreviewProcessingFailedException,
@@ -29,19 +25,19 @@ from zou.app.exceptions import (
     WrongIdFormatException,
     WrongParameterException,
     WrongTaskTypeForEntityException,
-    InactiveUserException,
 )
-
+from zou.app.indexer import indexing
+from zou.app.stores import auth_tokens_store, config_store, file_store
+from zou.app.swagger import configure_openapi_route
 from zou.app.utils import cache, fs, media_slots, monitoring
+from zou.app.utils.fido import get_fido_server
 from zou.app.utils.flask_utils import (
-    ParsedUserAgent,
     ORJSONProvider,
+    ParsedUserAgent,
     wrong_auth_handler,
 )
-
-from zou.app.utils.saml import saml_client_for
 from zou.app.utils.oidc import oidc_client_for
-from zou.app.utils.fido import get_fido_server
+from zou.app.utils.saml import saml_client_for
 
 # Extensions are created unbound and attached to an app in create_app().
 # Models are declared against `db.Model`, which is available without an
@@ -223,8 +219,9 @@ def register_error_handlers(app):
 
 
 def configure_auth(app):
-    from zou.app.services import persons_service
+    from zou.app.services import persons_service, preview_accounts_service
     from zou.app.services.auth_service import logout
+    from zou.app.utils import permissions
 
     def check_active_identity(identity, identity_type, jti, refresh_jti=None):
         if not identity.active:
@@ -262,6 +259,17 @@ def configure_auth(app):
             refresh_jti=payload.get("refresh_jti"),
         )
 
+        if identity.preview_project_id is not None:
+            if not (
+                preview_accounts_service.is_available()
+                and preview_accounts_service.is_preview_session_valid(
+                    identity, payload.get("iat")
+                )
+            ):
+                raise InactiveUserException
+            if request.method not in ("GET", "HEAD", "OPTIONS"):
+                raise permissions.PermissionDenied
+
         if payload.get("requires_2fa_setup"):
             allowed_paths = {
                 "/auth/totp",
@@ -279,16 +287,16 @@ def configure_auth(app):
         return identity
 
 
-def load_api(app):
+def load_api(app, with_plugins=True):
     from zou.app import api
 
-    api.configure(app)
+    api.configure(app, with_plugins=with_plugins)
 
     fs.mkdir_p(app.config["TMP_DIR"])
     configure_auth(app)
 
 
-def create_app(config_object=config):
+def create_app(config_object=config, with_plugins=True):
     """
     Build and wire a Zou Flask application: extensions, JSON provider,
     error handlers, auth, storages and API routes. Nothing is built at
@@ -353,7 +361,7 @@ def create_app(config_object=config):
 
     file_store.configure_storages(app)
     config_store.sync_config()
-    load_api(app)
+    load_api(app, with_plugins=with_plugins)
     warn_about_overridden_settings(app, config_object)
 
     return app

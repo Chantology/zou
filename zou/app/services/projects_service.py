@@ -1,38 +1,40 @@
+import re
 from collections import defaultdict
-from sqlalchemy.exc import IntegrityError
 
-from zou.app.models.preview_background_file import PreviewBackgroundFile
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError, StatementError
+from sqlalchemy.orm import joinedload, selectinload
+
+from zou.app import config, db
+from zou.app.exceptions import (
+    ProjectNotFoundException,
+    SoftwareNotFoundException,
+    TaskStatusNotFoundException,
+    WrongParameterException,
+)
+from zou.app.models.department import Department
 from zou.app.models.entity import Entity
 from zou.app.models.entity_type import EntityType
 from zou.app.models.metadata_descriptor import MetadataDescriptor
-from zou.app.models.person import Person, DepartmentLink, ROLE_TYPES
+from zou.app.models.person import ROLE_TYPES, DepartmentLink, Person
+from zou.app.models.preview_background_file import PreviewBackgroundFile
 from zou.app.models.project import (
     Project,
     ProjectPersonLink,
-    ProjectTaskTypeLink,
     ProjectTaskStatusLink,
+    ProjectTaskTypeLink,
+    ProjectTaskTypeSoftwareLink,
 )
 from zou.app.models.project_status import ProjectStatus
+from zou.app.models.software import Software
 from zou.app.models.status_automation import StatusAutomation
-from zou.app.models.task_type import TaskType
 from zou.app.models.task_status import TaskStatus
-from zou.app.models.department import Department
+from zou.app.models.task_type import TaskType
 from zou.app.services import (
     entity_types_service,
 )
-from zou.app.exceptions import (
-    ProjectNotFoundException,
-    WrongParameterException,
-)
-
-from zou.app.utils import fields, events, cache
-from zou.app import db
-
-from sqlalchemy.exc import StatementError
-from sqlalchemy.orm import joinedload, selectinload
-from sqlalchemy import or_
-from zou.app import config
-import re
+from zou.app.services.base_service import get_instance
+from zou.app.utils import cache, events, fields
 
 # Lower bound of a project movie bitrate in Mbit/s. The upper bound is the
 # instance high definition bitrate, MOVIE_HIGHDEF_BITRATE.
@@ -162,6 +164,7 @@ def _fetch_task_type_links_by_project(project_ids):
             "priority": link.priority,
             "hd_bitrate_compression": link.hd_bitrate_compression,
             "ld_bitrate_compression": link.ld_bitrate_compression,
+            "is_client_visible": link.is_client_visible,
         }
     return task_types_by_project
 
@@ -178,6 +181,7 @@ def _fetch_task_status_links_by_project(project_ids):
         task_statuses_by_project[link.project_id][str(link.task_status_id)] = {
             "priority": link.priority,
             "roles_for_board": fields.serialize_list(link.roles_for_board),
+            "is_client_allowed": link.is_client_allowed,
         }
     return task_statuses_by_project
 
@@ -460,6 +464,15 @@ def add_team_member(project_id, person_id, role=None):
     created so an invalid role leaves no partial state behind.
     """
     _check_project_role(role)
+    person = Person.get(person_id)
+    if (
+        person is not None
+        and person.preview_project_id is not None
+        and str(person.preview_project_id) != str(project_id)
+    ):
+        raise WrongParameterException(
+            "A preview account can only belong to its own project"
+        )
     project = _add_to_list_attr(project_id, Person, person_id, "team")
     if role is not None:
         update_team_member_role(project_id, person_id, role)
@@ -480,6 +493,12 @@ def update_team_member_role(project_id, person_id, role):
     inheritance of the person's global role.
     """
     _check_project_role(role)
+    person = Person.get(person_id)
+    # A preview account must show exactly what a client sees.
+    if person is not None and person.preview_project_id is not None:
+        raise WrongParameterException(
+            "A preview account keeps its client role"
+        )
     link = ProjectPersonLink.query.filter_by(
         project_id=project_id, person_id=person_id
     ).first()
@@ -555,10 +574,12 @@ def add_task_type_setting(
     task_type_id,
     priority=None,
     bitrates=None,
+    is_client_visible=None,
 ):
     """
     Add a task type listed in database to the the project task types. An
-    existing link keeps its priority and gets the bitrates when given.
+    existing link keeps its priority and gets the bitrates and the client
+    visibility when given.
     """
     project_id = str(project_id)
     task_type_id = str(task_type_id)
@@ -573,15 +594,21 @@ def add_task_type_setting(
     link = ProjectTaskTypeLink.get_by(
         task_type_id=task_type_id, project_id=project_id
     )
+    visibility = (
+        {}
+        if is_client_visible is None
+        else {"is_client_visible": is_client_visible}
+    )
     if not link:
         ProjectTaskTypeLink.create(
             task_type_id=task_type_id,
             project_id=project_id,
             priority=priority,
             **(bitrates or {}),
+            **visibility,
         )
-    elif bitrates is not None:
-        link.update(bitrates)
+    elif bitrates is not None or visibility:
+        link.update({**(bitrates or {}), **visibility})
     return _save_project(project)
 
 
@@ -630,23 +657,35 @@ def update_project_settings(
 
     wanted_task_types = {}
     for entry in task_types or []:
-        wanted_task_types[str(entry["task_type_id"])] = entry.get("priority")
+        wanted_task_types[str(entry["task_type_id"])] = entry
 
     existing_links = {
         str(link.task_type_id): link
         for link in ProjectTaskTypeLink.query.filter_by(project_id=project_id)
     }
-    for task_type_id, priority in wanted_task_types.items():
+    for task_type_id, entry in wanted_task_types.items():
         link = existing_links.get(task_type_id)
+        priority = entry.get("priority")
+        # Omitted visibility leaves an existing link unchanged.
+        visibility = (
+            {}
+            if entry.get("is_client_visible") is None
+            else {"is_client_visible": entry["is_client_visible"]}
+        )
         if link is None:
             if TaskType.get(task_type_id) is not None:
                 ProjectTaskTypeLink.create(
                     task_type_id=task_type_id,
                     project_id=project_id,
                     priority=priority,
+                    **visibility,
                 )
-        elif priority is not None and link.priority != priority:
-            link.update({"priority": priority})
+        else:
+            changes = dict(visibility)
+            if priority is not None and link.priority != priority:
+                changes["priority"] = priority
+            if changes:
+                link.update(changes)
     if replace_task_types:
         for task_type_id, link in existing_links.items():
             if task_type_id not in wanted_task_types:
@@ -868,6 +907,49 @@ def create_project_task_status_link(
     task_status_link_dict = task_status_link.serialize()
     _notify_project_settings_change(task_status_link_dict["project_id"])
     return task_status_link_dict
+
+
+def set_task_status_client_allowed(project_id, task_status_id, value):
+    """
+    Override, for given project, whether its clients may set given task
+    status. None reverts to the studio value. The status has to be linked
+    to the project.
+    """
+    if not task_status_id or not fields.is_valid_id(str(task_status_id)):
+        raise TaskStatusNotFoundException()
+    link = ProjectTaskStatusLink.get_by(
+        project_id=project_id, task_status_id=task_status_id
+    )
+    if link is None:
+        raise TaskStatusNotFoundException()
+    link.update({"is_client_allowed": value})
+    _notify_project_settings_change(project_id)
+    return link.serialize()
+
+
+def get_client_allowed_overrides(project_id):
+    """
+    Return the task status ids of given project whose client permission is
+    overridden, mapped to the override.
+    """
+    links = ProjectTaskStatusLink.query.filter(
+        ProjectTaskStatusLink.project_id == project_id,
+        ProjectTaskStatusLink.is_client_allowed.isnot(None),
+    ).all()
+    return {str(link.task_status_id): link.is_client_allowed for link in links}
+
+
+def is_task_status_client_allowed(project_id, task_status):
+    """
+    Return whether clients of given project may set given task status: the
+    project override when there is one, the studio value otherwise.
+    """
+    link = ProjectTaskStatusLink.get_by(
+        project_id=project_id, task_status_id=task_status["id"]
+    )
+    if link is None or link.is_client_allowed is None:
+        return bool(task_status.get("is_client_allowed"))
+    return link.is_client_allowed
 
 
 def set_project_task_type_link_priorities(project_id, task_type_ids):
@@ -1198,3 +1280,88 @@ def get_movie_bitrates(project, task_type_link=None):
     highdef = min(bitrates[0], config.MOVIE_HIGHDEF_BITRATE)
     lowdef = min(bitrates[1], highdef)
     return highdef, lowdef
+
+
+def _check_task_type_software_ids(task_type_id, software_id):
+    if not fields.is_valid_id(task_type_id) or not fields.is_valid_id(
+        software_id
+    ):
+        raise WrongParameterException(
+            "task_type_id and software_id must be valid UUIDs."
+        )
+
+
+def _serialize_task_type_software_link(link):
+    return {
+        "project_id": str(link.project_id),
+        "task_type_id": str(link.task_type_id),
+        "software_id": str(link.software_id),
+    }
+
+
+def get_task_type_software_links(project_id):
+    """
+    Return the softwares set for each task type of given project, as
+    project_id, task_type_id and software_id dicts.
+    """
+    links = ProjectTaskTypeSoftwareLink.query.filter_by(
+        project_id=project_id
+    ).order_by(
+        ProjectTaskTypeSoftwareLink.task_type_id,
+        ProjectTaskTypeSoftwareLink.software_id,
+    )
+    return [_serialize_task_type_software_link(link) for link in links]
+
+
+def add_task_type_software(project_id, task_type_id, software_id):
+    """
+    Link given software to given task type of given project. The task type
+    must be one of the project, the software must not be archived. An
+    existing link is returned as is.
+    """
+    _check_task_type_software_ids(task_type_id, software_id)
+    project = get_project_raw(project_id)
+    project_id = str(project.id)
+    if not ProjectTaskTypeLink.get_by(
+        project_id=project_id, task_type_id=task_type_id
+    ):
+        raise WrongParameterException(
+            "The task type is not a task type of the project."
+        )
+    software = get_instance(Software, software_id, SoftwareNotFoundException)
+    if software.archived:
+        raise WrongParameterException("The software is archived.")
+    link = ProjectTaskTypeSoftwareLink.get_by(
+        project_id=project_id,
+        task_type_id=task_type_id,
+        software_id=software_id,
+    )
+    if link is None:
+        link = ProjectTaskTypeSoftwareLink.create(
+            project_id=project_id,
+            task_type_id=task_type_id,
+            software_id=software_id,
+        )
+        events.emit("project:update", {}, project_id=project_id)
+    return _serialize_task_type_software_link(link)
+
+
+def remove_task_type_software(project_id, task_type_id, software_id):
+    """
+    Unlink given software from given task type of given project. Return the
+    deleted link, or None when the link does not exist.
+    """
+    _check_task_type_software_ids(task_type_id, software_id)
+    project = get_project_raw(project_id)
+    project_id = str(project.id)
+    link = ProjectTaskTypeSoftwareLink.get_by(
+        project_id=project_id,
+        task_type_id=task_type_id,
+        software_id=software_id,
+    )
+    if link is None:
+        return None
+    removed = _serialize_task_type_software_link(link)
+    link.delete()
+    events.emit("project:update", {}, project_id=project_id)
+    return removed

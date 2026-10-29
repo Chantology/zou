@@ -1,9 +1,14 @@
 from collections import defaultdict
 
-from sqlalchemy.orm import aliased, selectinload
-from sqlalchemy import func, and_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import DataError
+from sqlalchemy.orm import aliased, selectinload
 
+from zou.app.exceptions import (
+    NotificationNotFoundException,
+    ProjectNotFoundException,
+    WrongParameterException,
+)
 from zou.app.models.comment import Comment
 from zou.app.models.entity import Entity
 from zou.app.models.entity_type import EntityType
@@ -15,29 +20,23 @@ from zou.app.models.project_status import ProjectStatus
 from zou.app.models.subscription import Subscription
 from zou.app.models.task import Task
 from zou.app.models.task_type import TaskType
-
 from zou.app.services import (
     custom_actions_service,
+    departments_service,
+    entities_service,
+    entity_types_service,
+    files_service,
+    organisation_service,
     permissions_service,
     persons_service,
     plugins_service,
     projects_service,
+    search_filters_service,
     status_automations_service,
-    files_service,
-    departments_service,
-    entity_types_service,
-    organisation_service,
     subscriptions_service,
     task_types_service,
-    search_filters_service,
-    entities_service,
 )
-from zou.app.exceptions import (
-    NotificationNotFoundException,
-    WrongParameterException,
-    ProjectNotFoundException,
-)
-from zou.app.utils import cache, fields, permissions, events
+from zou.app.utils import cache, events, fields, permissions
 
 
 def clear_open_projects_cache():
@@ -509,9 +508,12 @@ def get_last_notifications(
         raise WrongParameterException("Wrong date format for after or before.")
 
     context = _load_notification_context(notifications)
+    project_roles = get_team_project_roles()
     for row in notifications:
         result.append(
-            _serialize_notification(row, is_current_user_artist, context)
+            _serialize_notification(
+                row, is_current_user_artist, project_roles, context
+            )
         )
 
     return result
@@ -617,12 +619,15 @@ def _filter_notifications(
     return query
 
 
-def _serialize_notification(row, is_current_user_artist, context):
+def _serialize_notification(
+    row, is_current_user_artist, project_roles, context
+):
     """
     Build the notification dict of one row of the listing query, with the
     entity or playlist it points at and the text of the comment or reply
     that raised it, read from the context _load_notification_context
-    built. A client comment is blanked for an artist.
+    built. A client comment is blanked for an artist, both roles read on
+    the project of the notification when it has one.
     """
     (
         notification,
@@ -689,6 +694,13 @@ def _serialize_notification(row, is_current_user_artist, context):
             reply_mentions = []
             reply_department_mentions = []
 
+    if project_id is not None:
+        role = permissions_service.get_project_role(
+            str(notification.author_id), str(project_id)
+        )
+        reader_role = project_roles.get(str(project_id))
+        if reader_role is not None:
+            is_current_user_artist = reader_role == "user"
     if role == "client" and is_current_user_artist:
         comment_text = ""
         reply_text = ""
@@ -733,6 +745,7 @@ def mark_notifications_as_read():
     to mark a list of notifications as read after an user retrieved them.
     """
     from sqlalchemy import update
+
     from zou.app import db
 
     current_user = persons_service.get_current_user()
@@ -849,6 +862,43 @@ def get_team_project_roles():
             role = current_user["role"]
         project_roles[str(link.project_id)] = role
     return project_roles
+
+
+def get_project_ids_with_roles(*roles):
+    """
+    Return the ids of the projects of the current user's teams where the
+    role they hold, read per project as get_team_project_roles does, is one
+    of given roles.
+    """
+    return [
+        project_id
+        for project_id, role in get_team_project_roles().items()
+        if role in roles
+    ]
+
+
+def build_supervision_scope_filter(roles, department_ids):
+    """
+    Return the task filter the manager and supervisor roles of given team
+    roles grant on other people's work: every task of a managed project,
+    the tasks of given departments on a supervised one. The department
+    restriction is read per project, so a supervisor of one project reads
+    every department of the projects they manage. A supervisor without
+    department reads every department of the projects they supervise.
+    """
+    supervised = Task.project_id.in_(
+        [pid for pid, role in roles.items() if role == "supervisor"]
+    )
+    if department_ids:
+        supervised = and_(
+            supervised, TaskType.department_id.in_(department_ids)
+        )
+    return or_(
+        Task.project_id.in_(
+            [pid for pid, role in roles.items() if role == "manager"]
+        ),
+        supervised,
+    )
 
 
 def get_context():

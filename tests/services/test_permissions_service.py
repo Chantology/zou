@@ -5,19 +5,18 @@ from flask import g
 from flask_jwt_extended import verify_jwt_in_request
 
 from tests.base import ApiDBTestCase
-
 from zou.app import app
+from zou.app.exceptions import PlaylistNotFoundException
 from zou.app.models.entity import Entity
 from zou.app.services import (
     comments_service,
+    entities_service,
     permissions_service,
     persons_service,
     projects_service,
-    tasks_service,
     task_types_service,
+    tasks_service,
 )
-
-from zou.app.exceptions import PlaylistNotFoundException
 from zou.app.utils import permissions
 
 UNKNOWN = "00000000-0000-0000-0000-000000000000"
@@ -642,11 +641,13 @@ class TaskAccessTestCase(PermissionsTestCase):
         with self.as_role("client"):
             self.assertTrue(
                 permissions_service.check_task_status_access(
-                    str(self.task_status.id)
+                    str(self.task_status.id), self.project_id
                 )
             )
             with self.denied():
-                permissions_service.check_task_status_access(closed)
+                permissions_service.check_task_status_access(
+                    closed, self.project_id
+                )
 
     def test_an_artist_may_not_use_a_status_closed_to_artists(self):
         """
@@ -660,16 +661,20 @@ class TaskAccessTestCase(PermissionsTestCase):
         with self.as_role("artist"):
             # Nothing resolved yet: the artist branch does not apply.
             self.assertTrue(
-                permissions_service.check_task_status_access(closed)
+                permissions_service.check_task_status_access(
+                    closed, self.project_id
+                )
             )
 
             permissions_service.check_project_access(self.project_id)
 
             with self.denied():
-                permissions_service.check_task_status_access(closed)
+                permissions_service.check_task_status_access(
+                    closed, self.project_id
+                )
             self.assertTrue(
                 permissions_service.check_task_status_access(
-                    str(self.task_status.id)
+                    str(self.task_status.id), self.project_id
                 )
             )
 
@@ -681,7 +686,9 @@ class TaskAccessTestCase(PermissionsTestCase):
 
         with self.as_role("manager"):
             self.assertTrue(
-                permissions_service.check_task_status_access(str(closed.id))
+                permissions_service.check_task_status_access(
+                    str(closed.id), self.project_id
+                )
             )
 
     def test_check_time_spent_access(self):
@@ -708,15 +715,26 @@ class TaskAccessTestCase(PermissionsTestCase):
                 )
 
     def test_time_spent_of_someone_not_assigned_is_refused(self):
-        # Even an admin cannot log time on a task for someone who is not on
-        # it.
         artist = self.join_team(self.a_user("artist"))
+        self.join_team(self.a_user("manager"))
 
-        with self.as_role("admin"):
+        with self.as_role("manager"):
             with self.denied():
                 permissions_service.check_time_spent_access(
                     self.task_id, artist["id"]
                 )
+
+    def test_an_admin_handles_time_of_someone_not_assigned(self):
+        # Assignees change: the time logged by a former assignee must stay
+        # editable by an admin.
+        artist = self.join_team(self.a_user("artist"))
+
+        with self.as_role("admin"):
+            self.assertTrue(
+                permissions_service.check_time_spent_access(
+                    self.task_id, artist["id"]
+                )
+            )
 
     def test_a_manager_of_the_team_logs_time_for_an_assignee(self):
         artist = self.join_team(self.a_user("artist"))
@@ -883,6 +901,16 @@ class DepartmentAccessTestCase(PermissionsTestCase):
             with self.denied():
                 permissions_service.check_supervisor_task_access(
                     self.task_dict, {"task_status_id": UNKNOWN}
+                )
+
+    def test_a_supervisor_with_departments_sends_no_metadata(self):
+        self.a_supervisor(department=self.own_department)
+        entity = entities_service.get_entity(str(self.asset.id))
+
+        with self.as_role("supervisor"):
+            with self.denied():
+                permissions_service.check_metadata_department_access(
+                    entity, {}
                 )
 
     def test_a_manager_of_the_team_writes_any_column(self):

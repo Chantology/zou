@@ -1,5 +1,9 @@
 from tests.base import ApiDBTestCase
-
+from zou.app.exceptions import (
+    ProjectNotFoundException,
+    ProjectTemplateNotFoundException,
+    WrongParameterException,
+)
 from zou.app.models.metadata_descriptor import MetadataDescriptor
 from zou.app.models.project import (
     Project,
@@ -14,14 +18,9 @@ from zou.app.models.project_template import (
     ProjectTemplateTaskTypeLink,
 )
 from zou.app.services import (
+    metadata_descriptors_service,
     project_templates_service,
     projects_service,
-    metadata_descriptors_service,
-)
-from zou.app.exceptions import (
-    ProjectNotFoundException,
-    ProjectTemplateNotFoundException,
-    WrongParameterException,
 )
 
 
@@ -489,6 +488,72 @@ class ProjectTemplateServiceTestCase(ApiDBTestCase):
         self.assertEqual(link.hd_bitrate_compression, 20)
         self.assertEqual(link.ld_bitrate_compression, 4)
 
+    def test_template_carries_client_visibility(self):
+        self.project.update(
+            {
+                "is_client_stats_visible": False,
+                "is_client_task_list_visible": False,
+                "is_client_task_panel_visible": False,
+            }
+        )
+        ProjectTaskTypeLink.create(
+            project_id=self.project_id,
+            task_type_id=self.task_type_modeling.id,
+            is_client_visible=False,
+        )
+        template = project_templates_service.create_template_from_project(
+            str(self.project_id), name="Hidden from clients"
+        )
+        self.assertIs(template["is_client_stats_visible"], False)
+        self.assertIs(template["is_client_task_list_visible"], False)
+        self.assertIs(template["is_client_task_panel_visible"], False)
+        template_link = ProjectTemplateTaskTypeLink.get_by(
+            project_template_id=template["id"],
+            task_type_id=self.task_type_modeling.id,
+        )
+        self.assertIs(template_link.is_client_visible, False)
+
+        target = Project.create(
+            name="Target", project_status_id=self.open_status.id
+        )
+        project_templates_service.apply_template_to_project(
+            str(target.id), template["id"]
+        )
+        target = Project.get(target.id)
+        self.assertIs(target.is_client_stats_visible, False)
+        self.assertIs(target.is_client_task_list_visible, False)
+        self.assertIs(target.is_client_task_panel_visible, False)
+        link = ProjectTaskTypeLink.get_by(
+            project_id=target.id, task_type_id=self.task_type_modeling.id
+        )
+        self.assertIs(link.is_client_visible, False)
+
+    def test_template_carries_the_client_allowed_override(self):
+        ProjectTaskStatusLink.create(
+            project_id=self.project_id,
+            task_status_id=self.task_status.id,
+            is_client_allowed=False,
+        )
+        template = project_templates_service.create_template_from_project(
+            str(self.project_id), name="Client overrides"
+        )
+        template_link = ProjectTemplateTaskStatusLink.get_by(
+            project_template_id=template["id"],
+            task_status_id=self.task_status.id,
+        )
+        self.assertIs(template_link.is_client_allowed, False)
+
+        target = Project.create(
+            name="Target", project_status_id=self.open_status.id
+        )
+        project_templates_service.apply_template_to_project(
+            str(target.id), template["id"]
+        )
+        link = ProjectTaskStatusLink.get_by(
+            project_id=target.id, task_status_id=self.task_status.id
+        )
+        self.assertIs(link.is_client_allowed, False)
+
     def test_template_keeps_the_unset_bitrates_of_its_project(self):
         self.project.update(
             {"hd_bitrate_compression": None, "ld_bitrate_compression": None}
@@ -606,6 +671,40 @@ class ProjectTemplateServiceTestCase(ApiDBTestCase):
         links = ProjectTaskTypeLink.get_all_by(project_id=target.id)
         self.assertEqual(len(links), 1)
         self.assertEqual(links[0].priority, 99)  # untouched
+
+    def test_apply_template_leaves_out_a_column_on_a_built_in_field(self):
+        # A template saved before Zou refused these columns still applies:
+        # only the column on the key of a built-in field is left out.
+        template = project_templates_service.create_project_template(
+            name="Legacy"
+        )
+        project_templates_service.set_template_metadata_descriptors(
+            template["id"],
+            [
+                {
+                    "name": "Resolution",
+                    "entity_type": "Shot",
+                    "data_type": "string",
+                },
+                {
+                    "name": "Difficulty",
+                    "entity_type": "Asset",
+                    "data_type": "string",
+                },
+            ],
+        )
+        target = Project.create(
+            name="Target", project_status_id=self.open_status.id
+        )
+        project_templates_service.apply_template_to_project(
+            str(target.id), template["id"]
+        )
+        descriptors = MetadataDescriptor.query.filter_by(
+            project_id=target.id
+        ).all()
+        self.assertEqual(
+            [descriptor.name for descriptor in descriptors], ["Difficulty"]
+        )
 
     def test_apply_template_with_explicit_overrides(self):
         template = self._build_full_template()

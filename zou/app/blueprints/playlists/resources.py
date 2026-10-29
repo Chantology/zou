@@ -1,8 +1,6 @@
-from flasgger import swag_from
-import slugify
-
 import os
 
+import slugify
 from flask import (
     after_this_request,
     request,
@@ -10,10 +8,9 @@ from flask import (
 )
 from flask.views import MethodView
 from flask_jwt_extended import jwt_required
+from rq.exceptions import DuplicateJobError
 
 from zou.app import config
-from zou.app.mixin import ArgsMixin
-
 from zou.app.blueprints.playlists.schemas import (
     AddEntitiesToPlaylistSchema,
     AddEntityToPlaylistSchema,
@@ -22,32 +19,35 @@ from zou.app.blueprints.playlists.schemas import (
     NotifyClientsPlaylistSchema,
     TempPlaylistCreateSchema,
 )
-from zou.app.services import (
-    entities_service,
-    notifications_service,
-    playlist_sharing_service,
-    playlists_service,
-    persons_service,
-    preview_files_service,
-    projects_service,
-    shots_service,
-    permissions_service,
-    playlist_builds_service,
-)
 from zou.app.exceptions import (
     BuildJobNotFoundException,
     PlaylistShareLinkNotFoundException,
 )
-from rq.exceptions import DuplicateJobError
+from zou.app.mixin import ArgsMixin
+from zou.app.services import (
+    entities_service,
+    notifications_service,
+    permissions_service,
+    persons_service,
+    playlist_builds_service,
+    playlist_sharing_service,
+    playlists_service,
+    preview_files_service,
+    projects_service,
+    shots_service,
+)
 from zou.app.stores import file_store, queue_store
 from zou.app.utils import fs, permissions, validation
+from zou.app.utils.openapi import load_specs, swag_from
 from zou.utils.movie import EncodingParameters
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class ProjectPlaylistsResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/ProjectPlaylistsResource_get.yml")
+    @swag_from(SPECS["ProjectPlaylistsResource_get"])
     def get(self, project_id):
         """
         Get project playlists
@@ -69,7 +69,7 @@ class ProjectPlaylistsResource(MethodView, ArgsMixin):
 class EpisodePlaylistsResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/EpisodePlaylistsResource_get.yml")
+    @swag_from(SPECS["EpisodePlaylistsResource_get"])
     def get(self, project_id, episode_id):
         """
         Get episode playlists
@@ -96,7 +96,7 @@ class EpisodePlaylistsResource(MethodView, ArgsMixin):
 class ProjectPlaylistResource(MethodView):
 
     @jwt_required()
-    @swag_from("openapi/ProjectPlaylistResource_get.yml")
+    @swag_from(SPECS["ProjectPlaylistResource_get"])
     def get(self, project_id, playlist_id):
         """
         Get playlist
@@ -119,7 +119,7 @@ class ProjectPlaylistResource(MethodView):
 class EntityPreviewsResource(MethodView):
 
     @jwt_required()
-    @swag_from("openapi/EntityPreviewsResource_get.yml")
+    @swag_from(SPECS["EntityPreviewsResource_get"])
     def get(self, entity_id):
         """
         Get entity previews
@@ -133,7 +133,7 @@ class EntityPreviewsResource(MethodView):
 class PlaylistAddEntityResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/PlaylistAddEntityResource_post.yml")
+    @swag_from(SPECS["PlaylistAddEntityResource_post"])
     def post(self, playlist_id):
         """
         Add entity to playlist
@@ -163,7 +163,7 @@ class PlaylistAddEntityResource(MethodView, ArgsMixin):
 class PlaylistAddEntitiesResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/PlaylistAddEntitiesResource_post.yml")
+    @swag_from(SPECS["PlaylistAddEntitiesResource_post"])
     def post(self, playlist_id):
         """
         Add entities to playlist
@@ -190,7 +190,7 @@ class PlaylistAddEntitiesResource(MethodView, ArgsMixin):
 class PlaylistDownloadResource(MethodView):
 
     @jwt_required()
-    @swag_from("openapi/PlaylistDownloadResource_get.yml")
+    @swag_from(SPECS["PlaylistDownloadResource_get"])
     def get(self, playlist_id, build_job_id):
         """
         Download playlist build
@@ -238,7 +238,7 @@ class PlaylistDownloadResource(MethodView):
 class BuildPlaylistMovieResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/BuildPlaylistMovieResource_get.yml")
+    @swag_from(SPECS["BuildPlaylistMovieResource_get"])
     def get(self, playlist_id):
         """
         Build playlist movie
@@ -307,7 +307,7 @@ class BuildPlaylistMovieResource(MethodView, ArgsMixin):
 class PlaylistZipDownloadResource(MethodView):
 
     @jwt_required()
-    @swag_from("openapi/PlaylistZipDownloadResource_get.yml")
+    @swag_from(SPECS["PlaylistZipDownloadResource_get"])
     def get(self, playlist_id):
         """
         Download playlist zip
@@ -351,7 +351,7 @@ class PlaylistZipDownloadResource(MethodView):
 class BuildJobResource(MethodView):
 
     @jwt_required()
-    @swag_from("openapi/BuildJobResource_get.yml")
+    @swag_from(SPECS["BuildJobResource_get"])
     def get(self, playlist_id, build_job_id):
         """
         Get build job
@@ -365,7 +365,7 @@ class BuildJobResource(MethodView):
         return build_job
 
     @jwt_required()
-    @swag_from("openapi/BuildJobResource_delete.yml")
+    @swag_from(SPECS["BuildJobResource_delete"])
     def delete(self, playlist_id, build_job_id):
         """
         Delete build job
@@ -383,7 +383,7 @@ class BuildJobResource(MethodView):
 class ProjectBuildJobsResource(MethodView):
 
     @jwt_required()
-    @swag_from("openapi/ProjectBuildJobsResource_get.yml")
+    @swag_from(SPECS["ProjectBuildJobsResource_get"])
     def get(self, project_id):
         """
         Get project build jobs
@@ -396,7 +396,7 @@ class ProjectBuildJobsResource(MethodView):
 class ProjectAllPlaylistsResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/ProjectAllPlaylistsResource_get.yml")
+    @swag_from(SPECS["ProjectAllPlaylistsResource_get"])
     def get(self, project_id):
         """
         Get all project playlists
@@ -410,7 +410,7 @@ class ProjectAllPlaylistsResource(MethodView, ArgsMixin):
 class TempPlaylistResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/TempPlaylistResource_post.yml")
+    @swag_from(SPECS["TempPlaylistResource_post"])
     def post(self, project_id):
         """
         Generate temp playlist
@@ -436,7 +436,7 @@ class TempPlaylistResource(MethodView, ArgsMixin):
 class NotifyClientsResource(MethodView, ArgsMixin):
 
     @jwt_required()
-    @swag_from("openapi/NotifyClientsResource_post.yml")
+    @swag_from(SPECS["NotifyClientsResource_post"])
     def post(self, playlist_id):
         """
         Notify clients playlist ready
@@ -463,12 +463,11 @@ class PlaylistShareLinksResource(MethodView):
     """
 
     @jwt_required()
-    @swag_from("openapi/PlaylistShareLinksResource_get.yml")
+    @swag_from(SPECS["PlaylistShareLinksResource_get"])
     def get(self, playlist_id):
         """
         List the share links of a playlist
         """
-        permissions.check_manager_permissions()
         playlist = playlists_service.get_playlist(playlist_id)
         permissions_service.check_manager_project_access(
             playlist["project_id"]
@@ -478,12 +477,11 @@ class PlaylistShareLinksResource(MethodView):
         )
 
     @jwt_required()
-    @swag_from("openapi/PlaylistShareLinksResource_post.yml")
+    @swag_from(SPECS["PlaylistShareLinksResource_post"])
     def post(self, playlist_id):
         """
         Create a share link for a playlist
         """
-        permissions.check_manager_permissions()
         playlist = playlists_service.get_playlist(playlist_id)
         permissions_service.check_manager_project_access(
             playlist["project_id"]
@@ -506,12 +504,11 @@ class PlaylistShareLinkResource(MethodView):
     """
 
     @jwt_required()
-    @swag_from("openapi/PlaylistShareLinkResource_delete.yml")
+    @swag_from(SPECS["PlaylistShareLinkResource_delete"])
     def delete(self, playlist_id, token):
         """
         Revoke a share link
         """
-        permissions.check_manager_permissions()
         playlist = playlists_service.get_playlist(playlist_id)
         permissions_service.check_manager_project_access(
             playlist["project_id"]
@@ -538,12 +535,11 @@ class PlaylistShareLinkInviteResource(MethodView):
     """
 
     @jwt_required()
-    @swag_from("openapi/PlaylistShareLinkInviteResource_post.yml")
+    @swag_from(SPECS["PlaylistShareLinkInviteResource_post"])
     def post(self, playlist_id, token):
         """
         Invite reviewers to a shared playlist
         """
-        permissions.check_manager_permissions()
         playlist = playlists_service.get_playlist(playlist_id)
         permissions_service.check_manager_project_access(
             playlist["project_id"]

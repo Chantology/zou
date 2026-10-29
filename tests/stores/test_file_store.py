@@ -1,6 +1,5 @@
-import unittest
 import os
-
+import unittest
 from unittest.mock import Mock
 
 import pytest
@@ -139,12 +138,7 @@ class SwiftPooledReadTestCase(unittest.TestCase):
             def close(self):
                 pass
 
-        def start(patcher):
-            # TestCase.enterContext only exists from Python 3.11.
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-        start(patch("swiftclient.Connection", FakeConnection))
+        self.enterContext(patch("swiftclient.Connection", FakeConnection))
         backend = SwiftBackend(
             "movies",
             SimpleNamespace(
@@ -155,12 +149,14 @@ class SwiftPooledReadTestCase(unittest.TestCase):
                 pool_timeout=0.1,
             ),
         )
-        start(
+        self.enterContext(
             patch.object(
                 file_store, "movies", SimpleNamespace(backend=backend)
             )
         )
-        start(patch.object(file_store.config, "FS_BACKEND", "swift"))
+        self.enterContext(
+            patch.object(file_store.config, "FS_BACKEND", "swift")
+        )
 
     def test_range_read_goes_through_the_pool(self):
         length, content_range, generator = file_store.read_movie_range(
@@ -235,6 +231,7 @@ class ReadMovieRangeTestCase(unittest.TestCase):
 
     def test_refused_range_is_a_416(self):
         from unittest.mock import patch
+
         from werkzeug.exceptions import RequestedRangeNotSatisfiable
 
         class ClientError(Exception):
@@ -545,8 +542,9 @@ class SharedSwiftAuthTestCase(unittest.TestCase):
         )
 
     def test_redis_failure_falls_back_to_keystone(self):
-        import redis
         from unittest.mock import patch
+
+        import redis
 
         with patch.object(
             self.store.swift_auth_store,

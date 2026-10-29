@@ -1,9 +1,8 @@
 from tests.base import ApiDBTestCase
-
 from zou.app.services import (
+    metadata_descriptors_service,
     persons_service,
     projects_service,
-    metadata_descriptors_service,
 )
 from zou.app.utils import fields
 
@@ -340,6 +339,34 @@ class ProjectMetadataRouteTestCase(ApiDBTestCase):
         asset = self.get(f"data/entities/{self.asset_id}")
         self.assertEqual(
             asset["data"], {"difficulty": "hard", "complexity": "low"}
+        )
+
+    def test_a_column_cannot_take_the_key_of_a_built_in_field(self):
+        # Kitsu showed a Resolution shot column next to the built-in one,
+        # both on the same value.
+        self.post(
+            self.descriptors_path(),
+            {
+                "entity_type": "Shot",
+                "name": "Resolution",
+                "data_type": "string",
+            },
+            400,
+        )
+        self.post(
+            "data/metadata-descriptors/all-projects",
+            {"entity_type": "Shot", "name": "FPS", "data_type": "string"},
+            400,
+        )
+        difficulty = self._new_descriptor("Difficulty")
+        self.put(
+            self.descriptors_path(difficulty),
+            {"name": "Frame In", "data_type": "string"},
+            400,
+        )
+        self.assertEqual(
+            [d["field_name"] for d in self.get(self.descriptors_path())],
+            ["difficulty"],
         )
 
     def test_all_projects_rename_onto_a_column_of_one_project_is_refused(

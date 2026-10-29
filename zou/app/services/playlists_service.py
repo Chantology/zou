@@ -1,37 +1,30 @@
 import logging
-
-
 from operator import itemgetter
 
 from sqlalchemy import or_
 from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import defer, joinedload
 
-
+from zou.app.exceptions import (
+    PlaylistLockTimeoutException,
+    PlaylistNotFoundException,
+)
 from zou.app.models.playlist import Playlist
 from zou.app.models.preview_file import PreviewFile
 from zou.app.models.task import Task
 from zou.app.models.task_type import TaskType
-
-from zou.app.utils import fields, events
-from zou.app.utils import query as query_utils
-from zou.app.stores.redis_lock import with_playlist_lock
-
 from zou.app.services import (
     assets_service,
     base_service,
     edits_service,
     entities_service,
+    entity_types_service,
     projects_service,
     shots_service,
     tasks_service,
-    entity_types_service,
 )
-
-from zou.app.exceptions import (
-    PlaylistLockTimeoutException,
-    PlaylistNotFoundException,
-)
+from zou.app.stores.redis_lock import with_playlist_lock
+from zou.app.utils import events, fields, query as query_utils
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +237,9 @@ def get_playlist_with_preview_file_revisions(
             preview_file = preview_file_map.get(shot["preview_file_id"], None)
             if preview_file is not None:
                 shot["preview_file_id"] = preview_file["id"]
+                shot["preview_file_original_name"] = preview_file[
+                    "original_name"
+                ]
                 shot["preview_file_extension"] = preview_file["extension"]
                 shot["preview_file_revision"] = preview_file["revision"]
                 shot["preview_file_width"] = preview_file["width"]
@@ -309,6 +305,7 @@ def set_preview_files_for_entities(playlist_dict, with_annotations=True):
     preview_columns = [
         PreviewFile.id,
         PreviewFile.revision,
+        PreviewFile.original_name,
         PreviewFile.extension,
         PreviewFile.width,
         PreviewFile.height,
@@ -349,11 +346,12 @@ def set_preview_files_for_entities(playlist_dict, with_annotations=True):
         light_preview_file = {
             "id": preview_file_id,
             "revision": row.revision,
+            "original_name": row.original_name,
             "extension": row.extension,
             "width": row.width,
             "height": row.height,
             "duration": float(row.duration or 0),
-            "status": str(row.status),
+            "status": fields.serialize_value(row.status),
             "created_at": fields.serialize_value(row.created_at),
             "task_id": str(row.task_id),
         }  # Do not add too much field to avoid building too big responses
@@ -813,6 +811,7 @@ def generate_playlisted_entity_from_task(task_id, task_type_links):
         playlisted_entity.update(
             {
                 "preview_file_id": preview_file["id"],
+                "preview_file_original_name": preview_file["original_name"],
                 "preview_file_extension": preview_file["extension"],
                 "preview_file_width": preview_file["width"],
                 "preview_file_height": preview_file["height"],
@@ -961,7 +960,7 @@ def _get_playlist_preview_file_list(preview_files):
             "width": preview_file.width,
             "height": preview_file.height,
             "duration": float(preview_file.duration or 0),
-            "status": str(preview_file.status),
+            "status": fields.serialize_value(preview_file.status),
             "annotations": preview_file.annotations,
             "created_at": fields.serialize_value(preview_file.created_at),
             "task_id": str(preview_file.task_id),

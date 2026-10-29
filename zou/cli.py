@@ -6,16 +6,21 @@ warnings.filterwarnings("ignore")
 import logging
 import os
 import sys
+
 import click
+
 from zou.app.services import (
     organisation_service,
 )
 
 
 def _get_app():
-    from zou.app import app
+    import zou.app
 
-    return app
+    # Plugins only add HTTP routes, which no CLI command serves.
+    return zou.app.__dict__.get("app") or zou.app.create_app(
+        with_plugins=False
+    )
 
 
 def _get_db_uri():
@@ -213,7 +218,7 @@ def upgrade_db(no_telemetry=False):
 
     from alembic import command
     from alembic.script import ScriptDirectory
-    from sqlalchemy import create_engine, text, pool
+    from sqlalchemy import create_engine, pool, text
 
     cfg = _get_alembic_config()
 
@@ -303,23 +308,33 @@ def create_admin(email, password):
     """
     from sqlalchemy.exc import IntegrityError
 
-    from zou.app.utils import auth
-    from zou.app.services import persons_service
     from zou.app.exceptions import (
         IsUserLimitReachedException,
         PersonNotFoundException,
     )
+    from zou.app.services import persons_service
+    from zou.app.utils import auth
+
+    # The service logs are structured for production, the messages below
+    # say the same thing in a readable way.
+    logging.getLogger(persons_service.__name__).setLevel(logging.WARNING)
+
+    def fail(message):
+        click.echo(f"❌ {message}", err=True)
+        sys.exit(1)
 
     with _get_app().app_context():
         try:
             person = persons_service.get_person_by_email(email)
-            if person["role"] != "admin":
+            if person["role"] == "admin":
+                print(f"Admin {email} already exists.")
+            else:
                 persons_service.update_person(
                     person["id"],
                     {"role": "admin"},
                     bypass_protected_accounts=True,
                 )
-                print("Existing user's role has been upgraded to 'admin'.")
+                print(f"✅ User {email} upgraded to admin.")
         except PersonNotFoundException:
             try:
                 if password is None:
@@ -336,21 +351,16 @@ def create_admin(email, password):
                 persons_service.create_person(
                     email, password, "Super", "Admin", role="admin"
                 )
-                print("Admin successfully created.")
+                print(f"✅ Admin {email} created.")
             except IntegrityError:
-                print("User already exists for this email.")
-                sys.exit(1)
+                fail(f"A user already exists for {email}.")
             except auth.PasswordTooShortException:
-                print("Password is too short.")
-                sys.exit(1)
+                fail("Password is too short.")
             except auth.EmailNotValidException as e:
-                print(f"Email is not valid: {e}")
-                sys.exit(1)
+                fail(f"Email is not valid: {e}")
             except IsUserLimitReachedException:
-                print(
-                    f"User limit reached (limit {organisation_service.get_user_limit()})."
-                )
-                sys.exit(1)
+                limit = organisation_service.get_user_limit()
+                fail(f"User limit reached ({limit}).")
 
 
 @cli.command()
@@ -390,11 +400,11 @@ def disable_two_factor_authentication(email_or_desktop_login):
     """
     Disable two factor authentication for given user.
     """
-    from zou.app.services import persons_service, auth_service
     from zou.app.exceptions import (
         PersonNotFoundException,
         TwoFactorAuthenticationNotEnabledException,
     )
+    from zou.app.services import auth_service, persons_service
 
     with _get_app().app_context():
         try:
@@ -424,8 +434,8 @@ def change_password(email, password):
     """
     Change the password of given user.
     """
-    from zou.app.utils import auth
     from zou.app.services import persons_service
+    from zou.app.utils import auth
 
     with _get_app().app_context():
         try:
@@ -445,11 +455,11 @@ def set_person_as_active(email, unactive):
     """
     Set a person as active.
     """
-    from zou.app.services import persons_service
     from zou.app.exceptions import (
         IsUserLimitReachedException,
         PersonNotFoundException,
     )
+    from zou.app.services import persons_service
 
     with _get_app().app_context():
         try:

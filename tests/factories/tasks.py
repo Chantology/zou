@@ -1,14 +1,13 @@
 from zou.app.models.status_automation import StatusAutomation
-from zou.app.utils import fields
+from zou.app.models.task import Task
+from zou.app.models.task_status import TaskStatus
+from zou.app.models.task_type import TaskType
 from zou.app.services import (
     comments_service,
     projects_service,
     task_types_service,
 )
-
-from zou.app.models.task import Task
-from zou.app.models.task_status import TaskStatus
-from zou.app.models.task_type import TaskType
+from zou.app.utils import fields
 
 
 class TaskFactories:
@@ -424,7 +423,7 @@ class TaskFactories:
         self.task = self.generate_fixture_shot_task()
         self.task_dict = self.task.serialize()
         self.generate_fixture_person(
-            first_name="Jane", email="jane.doe@gmail.com"
+            first_name="Jane", email="jane.doe@example.com"
         )
         self.comment = comments_service.new_comment(
             self.task.id, self.task_status.id, self.user["id"], "first comment"

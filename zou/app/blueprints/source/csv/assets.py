@@ -1,26 +1,27 @@
-from flasgger import swag_from
 from zou.app.blueprints.source.csv.base import (
     BaseCsvProjectImportResource,
     RowException,
 )
-
+from zou.app.exceptions import WrongParameterException
 from zou.app.services import (
     assets_service,
+    comments_service,
     entities_service,
+    entity_types_service,
     index_service,
+    persons_service,
     projects_service,
     shots_service,
-    persons_service,
-    comments_service,
-    tasks_service,
-    entity_types_service,
     task_types_service,
+    tasks_service,
 )
-from zou.app.exceptions import WrongParameterException
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class AssetsCsvImportResource(BaseCsvProjectImportResource):
-    @swag_from("openapi/AssetsCsvImportResource_post.yml")
+    @swag_from(SPECS["AssetsCsvImportResource_post"])
     def post(self, project_id):
         """
         Import assets csv

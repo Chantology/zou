@@ -1,5 +1,4 @@
 from tests.base import ApiDBTestCase
-
 from zou.app.models.attachment_file import AttachmentFile
 from zou.app.models.build_job import BuildJob
 from zou.app.models.comment import Comment
@@ -12,8 +11,8 @@ from zou.app.models.playlist import Playlist
 from zou.app.models.preview_file import PreviewFile
 from zou.app.models.project import Project
 from zou.app.models.schedule_item import ScheduleItem
-from zou.app.models.task import Task
 from zou.app.models.subscription import Subscription
+from zou.app.models.task import Task
 from zou.app.models.time_spent import TimeSpent
 from zou.app.utils import fields
 
@@ -298,9 +297,8 @@ class ImportKitsuRoutesTestCase(ApiDBTestCase):
 
     def test_non_admin_is_denied(self):
         """
-        check_access falls back to has_admin_permissions on every
-        /import/kitsu/* route: a non-admin caller can POST but no row
-        gets created.
+        Every /import/kitsu/* route is admin-only: a non-admin caller
+        gets a 403 and no row gets created.
         """
         self.generate_fixture_user_cg_artist()
         self.log_in_cg_artist()
@@ -315,8 +313,7 @@ class ImportKitsuRoutesTestCase(ApiDBTestCase):
                 "date": "2026-06-01",
             }
         ]
-        response = self._post_kitsu("/import/kitsu/milestones", payload)
-        self.assertEqual(response, [])
+        self._post_kitsu("/import/kitsu/milestones", payload, code=403)
         self.assertIsNone(Milestone.get(new_id))
 
     def test_silent_flag_skips_event_emission(self):

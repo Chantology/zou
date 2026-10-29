@@ -1,9 +1,7 @@
 import subprocess
-
 from unittest.mock import patch
 
 from tests.base import ApiDBTestCase, ApiTestCase
-
 from zou import __version__
 from zou.app import app, config
 
@@ -63,6 +61,12 @@ class StatsRouteTestCase(ApiDBTestCase):
         self.generate_fixture_user_manager()
         self.log_in_manager()
         self.get("/stats", 403)
+
+    def test_test_event_route_is_admin_only(self):
+        self.get("/status/test-event")
+        self.generate_fixture_user_manager()
+        self.log_in_manager()
+        self.get("/status/test-event", 403)
 
 
 class ConfigRouteTestCase(ApiDBTestCase):

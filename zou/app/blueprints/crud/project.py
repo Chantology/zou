@@ -1,29 +1,27 @@
-from flasgger import swag_from
 from flask import request
+from flask.views import MethodView
 from flask_jwt_extended import jwt_required
 
-from flask.views import MethodView
-
-
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
+from zou.app.exceptions import WrongParameterException
 from zou.app.mixin import ArgsMixin
-from zou.app.models.project import Project, PROJECT_STYLES
+from zou.app.models.project import PROJECT_STYLES, Project
 from zou.app.models.project_status import ProjectStatus
 from zou.app.services import (
+    cascade_deletion_service,
+    files_service,
+    metadata_descriptors_service,
+    permissions_service,
+    persons_service,
     project_templates_service,
     projects_service,
     shots_service,
-    permissions_service,
     user_service,
-    persons_service,
-    files_service,
-    metadata_descriptors_service,
-    cascade_deletion_service,
 )
-from zou.app.utils import events, permissions, fields
+from zou.app.utils import events, fields, permissions
+from zou.app.utils.openapi import load_specs, swag_from
 
-from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
-
-from zou.app.exceptions import WrongParameterException
+SPECS = load_specs(__file__, "openapi/project.yml")
 
 
 class ProjectsResource(BaseModelsResource):
@@ -45,7 +43,7 @@ class ProjectsResource(BaseModelsResource):
         ]
 
     @jwt_required()
-    @swag_from("openapi/ProjectsResource_get.yml")
+    @swag_from(SPECS["ProjectsResource_get"])
     def get(self):
         """
         Get projects
@@ -53,7 +51,7 @@ class ProjectsResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/ProjectsResource_post.yml")
+    @swag_from(SPECS["ProjectsResource_post"])
     def post(self):
         """
         Create project
@@ -189,7 +187,7 @@ class ProjectResource(BaseModelResource, ArgsMixin):
         )
 
     @jwt_required()
-    @swag_from("openapi/ProjectResource_get.yml")
+    @swag_from(SPECS["ProjectResource_get"])
     def get(self, instance_id):
         """
         Get project
@@ -197,7 +195,7 @@ class ProjectResource(BaseModelResource, ArgsMixin):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/ProjectResource_put.yml")
+    @swag_from(SPECS["ProjectResource_put"])
     def put(self, instance_id):
         """
         Update project
@@ -222,7 +220,12 @@ class ProjectResource(BaseModelResource, ArgsMixin):
                 ]
             ]
 
-        if data.get("preview_background_file_id") is not None:
+        for field in (
+            "preview_background_file_id",
+            "default_preview_background_file_id",
+        ):
+            if data.get(field) is None:
+                continue
             if "preview_background_files" in data:
                 preview_background_files_ids = [
                     str(preview_background_file.id)
@@ -232,18 +235,13 @@ class ProjectResource(BaseModelResource, ArgsMixin):
                 ]
             else:
                 preview_background_files_ids = [
-                    preview_background_file_id
-                    for preview_background_file_id in project_dict[
-                        "preview_background_files"
-                    ]
+                    str(preview_background_file.id)
+                    for preview_background_file in projects_service.get_project_raw(
+                        project_dict["id"]
+                    ).preview_background_files
                 ]
-            if (
-                data["preview_background_file_id"]
-                not in preview_background_files_ids
-            ):
-                raise WrongParameterException(
-                    "Invalid preview_background_file_id"
-                )
+            if data[field] not in preview_background_files_ids:
+                raise WrongParameterException(f"Invalid {field}")
 
         return data
 
@@ -283,7 +281,7 @@ class ProjectResource(BaseModelResource, ArgsMixin):
         return data
 
     @jwt_required()
-    @swag_from("openapi/ProjectResource_delete.yml")
+    @swag_from(SPECS["ProjectResource_delete"])
     def delete(self, instance_id):
         """
         Delete project
@@ -302,6 +300,7 @@ class ProjectResource(BaseModelResource, ArgsMixin):
             if force:
                 cascade_deletion_service.remove_project(instance_id)
             else:
+                cascade_deletion_service.remove_preview_account(instance_id)
                 project.delete()
                 events.emit("project:delete", {"project_id": project.id})
             self.post_delete(project_dict)
@@ -310,7 +309,7 @@ class ProjectResource(BaseModelResource, ArgsMixin):
 
 class ProjectTaskTypeLinksResource(MethodView, ArgsMixin):
     @jwt_required()
-    @swag_from("openapi/ProjectTaskTypeLinksResource_post.yml")
+    @swag_from(SPECS["ProjectTaskTypeLinksResource_post"])
     def post(self):
         """
         Create project task type link
@@ -335,7 +334,7 @@ class ProjectTaskTypeLinksResource(MethodView, ArgsMixin):
 
 class ProjectTaskStatusLinksResource(MethodView, ArgsMixin):
     @jwt_required()
-    @swag_from("openapi/ProjectTaskStatusLinksResource_post.yml")
+    @swag_from(SPECS["ProjectTaskStatusLinksResource_post"])
     def post(self):
         """
         Create project task status link
@@ -377,7 +376,7 @@ def _validate_id_list_body(key):
 
 class ProjectTaskTypeLinksReorderResource(MethodView):
     @jwt_required()
-    @swag_from("openapi/ProjectTaskTypeLinksReorderResource_post.yml")
+    @swag_from(SPECS["ProjectTaskTypeLinksReorderResource_post"])
     def post(self, project_id):
         """
         Reorder project task type links
@@ -391,7 +390,7 @@ class ProjectTaskTypeLinksReorderResource(MethodView):
 
 class ProjectTaskStatusLinksReorderResource(MethodView):
     @jwt_required()
-    @swag_from("openapi/ProjectTaskStatusLinksReorderResource_post.yml")
+    @swag_from(SPECS["ProjectTaskStatusLinksReorderResource_post"])
     def post(self, project_id):
         """
         Reorder project task status links

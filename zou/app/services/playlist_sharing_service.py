@@ -3,8 +3,12 @@ import uuid
 
 from sqlalchemy import or_
 
-from zou.app.utils import auth, events, fields
-
+from zou.app.exceptions import (
+    PersonNotFoundException,
+    PlaylistShareLinkNotFoundException,
+    PreviewFileNotFoundException,
+    WrongParameterException,
+)
 from zou.app.models.comment import Comment
 from zou.app.models.entity import Entity
 from zou.app.models.entity_type import EntityType
@@ -16,6 +20,7 @@ from zou.app.models.task import Task
 from zou.app.models.task_status import TaskStatus
 from zou.app.models.task_type import TaskType
 from zou.app.services import (
+    attachment_files_service,
     comments_service,
     deletion_service,
     emails_service,
@@ -23,17 +28,11 @@ from zou.app.services import (
     notifications_service,
     persons_service,
     playlists_service,
-    tasks_service,
     projects_service,
     task_types_service,
-    attachment_files_service,
+    tasks_service,
 )
-from zou.app.exceptions import (
-    PersonNotFoundException,
-    PlaylistShareLinkNotFoundException,
-    PreviewFileNotFoundException,
-    WrongParameterException,
-)
+from zou.app.utils import auth, events, fields
 
 # Entity types for which "parent" is a parent record (shot/seq/episode/…).
 # For other types, we show the entity type name as the logical parent
@@ -131,11 +130,15 @@ def get_share_link_by_token_raw(token):
     return share_link
 
 
-def validate_share_token(token, password=None):
+def validate_share_token(token):
     """
     Validate that a share token is active and not expired.
     Returns the serialized share link on success.
     Raises appropriate exceptions on failure.
+
+    The password of a protected link is checked apart, by
+    check_share_link_password, once per request in the route decorator:
+    the service functions re-validating the token do not hold it.
     """
     share_link = get_share_link_by_token_raw(token)
     if not share_link.is_active:
@@ -149,7 +152,16 @@ def validate_share_token(token, password=None):
         if now > expiration:
             raise PlaylistShareLinkNotFoundException
 
-    if share_link.password is not None and share_link.password != "":
+    return share_link.serialize()
+
+
+def check_share_link_password(token, password):
+    """
+    Raise PlaylistShareLinkNotFoundException when the link is protected and
+    ``password`` is missing or wrong. A link without password accepts any.
+    """
+    share_link = get_share_link_by_token_raw(token)
+    if share_link.password:
         # Constant-time bcrypt verify; never a plain `!=`.
         if not password:
             raise PlaylistShareLinkNotFoundException
@@ -158,8 +170,6 @@ def validate_share_token(token, password=None):
                 raise PlaylistShareLinkNotFoundException
         except (ValueError, TypeError):
             raise PlaylistShareLinkNotFoundException
-
-    return share_link.serialize()
 
 
 def get_shared_playlist(token):
@@ -325,7 +335,12 @@ def update_guest_comment(comment_id, guest_id, data, token):
             new_status = task_types_service.get_task_status(new_status_id)
         except Exception:
             raise GuestCommentForbidden
-        if not new_status.get("is_client_allowed", False):
+        project_id = tasks_service.get_task(instance["object_id"])[
+            "project_id"
+        ]
+        if not projects_service.is_task_status_client_allowed(
+            project_id, new_status
+        ):
             raise GuestCommentForbidden
     previous_status_id = instance.get("task_status_id")
 
@@ -691,6 +706,37 @@ def _parent_name_for_shot_entry(entity, entity_type_name, parent_map):
     return entity_type_name
 
 
+def _is_for_all_episodes(playlist_dict):
+    """
+    Read the flag the way the playlist listings do: a playlist attached to
+    an episode belongs to that episode, whatever its is_for_all says.
+    """
+    if playlist_dict.get("episode_id"):
+        return False
+    return bool(playlist_dict.get("is_for_all"))
+
+
+def _prefix_parents_with_their_episode(parents, parent_map):
+    """
+    Sequence names repeat across episodes: in a playlist for all episodes,
+    name each parent after its own parent too, which for a sequence is its
+    episode ("E01 / S01"). Return the parent map with these names.
+    """
+    episode_ids = {str(p.parent_id) for p in parents if p.parent_id}
+    if not episode_ids:
+        return parent_map
+    episode_names = {
+        str(episode.id): episode.name
+        for episode in Entity.query.filter(Entity.id.in_(episode_ids)).all()
+    }
+    prefixed_map = dict(parent_map)
+    for parent in parents:
+        episode_name = episode_names.get(str(parent.parent_id))
+        if episode_name:
+            prefixed_map[str(parent.id)] = f"{episode_name} / {parent.name}"
+    return prefixed_map
+
+
 def _apply_task_styling_to_shot(
     shot, task_id, task_type_by_task_id, task_status_color_by_task_id
 ):
@@ -737,7 +783,8 @@ def enrich_shots_with_entity_info(playlist_dict):
     (sequence/episode/asset_type name). The stored `playlist.shots` only
     keeps preview/entity references — in the shared context, consumers
     have no auth'd access to entity/asset/shot stores, so names must be
-    inlined here.
+    inlined here. In a playlist for all episodes, the sequence of a shot
+    comes with its episode.
     """
     _enrich_shared_playlist_project_line(playlist_dict)
 
@@ -752,10 +799,12 @@ def enrich_shots_with_entity_info(playlist_dict):
     parent_ids = {str(e.parent_id) for e in entities if e.parent_id}
     parent_map = {}
     if parent_ids:
-        parent_map = {
-            str(p.id): p.name
-            for p in Entity.query.filter(Entity.id.in_(parent_ids)).all()
-        }
+        parents = Entity.query.filter(Entity.id.in_(parent_ids)).all()
+        parent_map = {str(p.id): p.name for p in parents}
+        if _is_for_all_episodes(playlist_dict):
+            parent_map = _prefix_parents_with_their_episode(
+                parents, parent_map
+            )
 
     type_ids = {str(e.entity_type_id) for e in entities if e.entity_type_id}
     type_map = {}
@@ -797,31 +846,19 @@ def enrich_shots_with_entity_info(playlist_dict):
 
 def create_guest(token, first_name, last_name=""):
     """
-    Return or create a guest Person scoped to the share link of ``token``.
+    Create a guest Person scoped to the share link of ``token``.
 
     Each guest is bound to the share link that created it (via
-    ``Person.data['share_link_id']``). Reuse by first/last name only matches
-    guests created from the same share link, so a reviewer named "John
-    Smith" who has commented through link A cannot be impersonated by an
-    attacker who later creates a guest with the same name through link B.
-    The guest always has ``is_guest=True`` and ``role=client``.
+    ``Person.data['share_link_id']``). A guest is never looked up by name:
+    typing the name of a reviewer who commented before must not take their
+    identity. The viewer keeps their guest id and reuses it through
+    get_guest_for_share_link. The guest always has ``is_guest=True`` and
+    ``role=client``.
     """
     share_link = validate_share_token(token)
     share_link_id = str(share_link["id"])
     first_name = (first_name or "Guest").strip()
     last_name = (last_name or "").strip()
-
-    existing = (
-        Person.query.filter_by(
-            is_guest=True,
-            first_name=first_name,
-            last_name=last_name,
-        )
-        .filter(Person.data["share_link_id"].astext == share_link_id)
-        .first()
-    )
-    if existing is not None:
-        return existing.serialize()
 
     guest = Person.create(
         first_name=first_name,
@@ -860,22 +897,26 @@ def get_guest_for_share_link(guest_id, share_link):
     return person
 
 
-def get_shared_playlist_context(token):
+def get_share_link_context(share_link):
     """
-    Return the minimal project context needed to display a shared
-    playlist: the project, its task types, and its task statuses. No
-    entity is listed: the shots of the playlist carry their names, and the
-    main preview of an entity can be a revision the link does not share.
+    Return the minimal context needed to display the playlist of a
+    validated share link: what the link allows, the project, its task
+    types, and its task statuses. No entity is listed: the shots of the
+    playlist carry their names, and the main preview of an entity can be
+    a revision the link does not share.
     """
-    share_link = validate_share_token(token)
     playlist = playlists_service.get_playlist(share_link["playlist_id"])
     project_id = playlist["project_id"]
     project = projects_service.get_project(project_id)
 
     task_types = projects_service.get_project_task_types(project_id)
     task_statuses = projects_service.get_project_task_statuses(project_id)
+    client_allowed_overrides = projects_service.get_client_allowed_overrides(
+        project_id
+    )
 
     return {
+        "share_link": {"can_comment": share_link["can_comment"]},
         "project": {
             "id": project["id"],
             "name": project["name"],
@@ -903,7 +944,9 @@ def get_shared_playlist_context(token):
                 "name": ts["name"],
                 "short_name": ts["short_name"],
                 "color": ts["color"],
-                "is_client_allowed": ts.get("is_client_allowed", False),
+                "is_client_allowed": client_allowed_overrides.get(
+                    ts["id"], ts.get("is_client_allowed", False)
+                ),
                 "is_default": ts.get("is_default", False),
                 "for_concept": ts.get("for_concept", False),
             }

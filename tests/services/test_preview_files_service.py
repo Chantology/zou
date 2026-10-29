@@ -8,28 +8,22 @@ from unittest.mock import patch
 from sqlalchemy.orm.exc import StaleDataError
 
 from tests.base import ApiDBTestCase
-
-
-from zou.app.models.preview_file import PreviewFile
-from zou.app.models.project import ProjectTaskTypeLink
-from zou.app.services import (
-    files_service,
-    preview_files_service,
-    preview_annotations_service,
-    preview_maintenance_service,
-    projects_service,
-)
-from zou.app.services import preview_file_states_service as states_service
-from zou.app.stores import file_store
-from zou.app.utils import fields, remote_job
+from tests.services.cases import PreviewFileTestCase
 from zou.app.exceptions import (
     AnnotationNotFoundException,
     PreviewFileNotFoundException,
     WrongParameterException,
 )
-from zou.app.services.projects_service import (
-    is_valid_resolution,
-    is_valid_partial_resolution,
+from zou.app.models.entity import Entity
+from zou.app.models.preview_file import PreviewFile
+from zou.app.models.project import ProjectTaskTypeLink
+from zou.app.services import (
+    files_service,
+    preview_annotations_service,
+    preview_file_states_service as states_service,
+    preview_files_service,
+    preview_maintenance_service,
+    projects_service,
 )
 from zou.app.services.preview_annotations_service import (
     extract_all_annotation_frames_from_preview_file,
@@ -42,8 +36,21 @@ from zou.app.services.preview_files_service import (
     get_preview_file_dimensions,
     get_preview_file_fps,
 )
-from tests.services.cases import PreviewFileTestCase
-from zou.app.models.entity import Entity
+from zou.app.services.projects_service import (
+    is_valid_partial_resolution,
+    is_valid_resolution,
+)
+from zou.app.stores import file_store
+from zou.app.utils import fields, remote_job
+
+
+def _make_temp_folder(test_case):
+    """
+    Create a temporary folder, removed with its content once the test ends.
+    """
+    folder = tempfile.mkdtemp()
+    test_case.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+    return folder
 
 
 class PreviewFileServiceTestCase(PreviewFileTestCase):
@@ -54,7 +61,7 @@ class PreviewFileServiceTestCase(PreviewFileTestCase):
 
     def test_save_variants_cleans_up_on_upload_failure(self):
         self.generate_fixture_preview_file()
-        folder = tempfile.mkdtemp()
+        folder = _make_temp_folder(self)
         picture_path = os.path.join(folder, "original.png")
         shutil.copyfile(
             self.get_fixture_file_path(os.path.join("thumbnails", "th01.png")),
@@ -1769,7 +1776,7 @@ class PreviewFileWritesRecordStatesTestCase(PreviewFileTestCase):
         picture_path = self.get_fixture_file_path(
             os.path.join("thumbnails", "th01.png")
         )
-        tmp_path = os.path.join(tempfile.mkdtemp(), "original.png")
+        tmp_path = os.path.join(_make_temp_folder(self), "original.png")
         shutil.copyfile(picture_path, tmp_path)
         preview_files_service.save_variants(self.preview_file_id, tmp_path)
         states = self.states()
@@ -1787,7 +1794,7 @@ class PreviewFileWritesRecordStatesTestCase(PreviewFileTestCase):
     @patch("zou.app.services.preview_files_service.file_store.add_picture")
     @patch("zou.app.services.preview_files_service.movie.generate_tile")
     def test_built_tile_is_recorded(self, mock_tile, mock_add_picture):
-        tile_path = os.path.join(tempfile.mkdtemp(), "tile.png")
+        tile_path = os.path.join(_make_temp_folder(self), "tile.png")
         open(tile_path, "wb").close()
         mock_tile.return_value = tile_path
         preview_files_service.generate_tiles(
@@ -1804,7 +1811,7 @@ class PreviewFileWritesRecordStatesTestCase(PreviewFileTestCase):
         # The tile already made it to the store: a failure removing the
         # local temp copy afterwards must not turn the recorded state
         # back to failed.
-        tile_path = os.path.join(tempfile.mkdtemp(), "tile.png")
+        tile_path = os.path.join(_make_temp_folder(self), "tile.png")
         open(tile_path, "wb").close()
         mock_tile.return_value = tile_path
         mock_remove.side_effect = OSError("permission denied")
@@ -1831,10 +1838,10 @@ class PreviewFileWritesRecordStatesTestCase(PreviewFileTestCase):
         mock_add_picture,
         mock_remove,
     ):
-        thumbnail_path = os.path.join(tempfile.mkdtemp(), "thumb.png")
+        thumbnail_path = os.path.join(_make_temp_folder(self), "thumb.png")
         open(thumbnail_path, "wb").close()
         mock_generate_thumbnail.return_value = thumbnail_path
-        tile_path = os.path.join(tempfile.mkdtemp(), "tile.png")
+        tile_path = os.path.join(_make_temp_folder(self), "tile.png")
         open(tile_path, "wb").close()
         mock_generate_tile.return_value = tile_path
 

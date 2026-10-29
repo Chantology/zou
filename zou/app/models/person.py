@@ -1,27 +1,26 @@
 import logging
 
+from babel import Locale
+from babel.core import UnknownLocaleError
+from pytz import timezone as pytz_timezone
+from sqlalchemy import Index, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import validates
 from sqlalchemy_utils import (
-    UUIDType,
+    ChoiceType,
     EmailType,
     LocaleType,
     TimezoneType,
-    ChoiceType,
+    UUIDType,
 )
-from sqlalchemy import func, Index
-from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import validates
-from sqlalchemy.dialects.postgresql import JSONB
 
-from pytz import timezone as pytz_timezone
-from babel import Locale
-from babel.core import UnknownLocaleError
-
-from zou.app.models.serializer import SerializerMixin
-from zou.app.utils import fields
-from zou.app.models.department import Department
-from zou.app.models.base import BaseMixin
 from zou.app import db
+from zou.app.models.base import BaseMixin
+from zou.app.models.department import Department
+from zou.app.models.serializer import SerializerMixin
 from zou.app.stores import config_store
+from zou.app.utils import fields
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +85,18 @@ SENSITIVE_FIELDS = [
     "oidc_subject",
     "saml_issuer",
     "saml_subject",
+]
+
+# The two-factor settings: only the auth routes change them.
+TWO_FACTOR_FIELDS = [
+    "totp_enabled",
+    "totp_secret",
+    "email_otp_enabled",
+    "email_otp_secret",
+    "fido_enabled",
+    "fido_credentials",
+    "otp_recovery_codes",
+    "preferred_two_factor_authentication",
 ]
 
 
@@ -244,6 +255,15 @@ class Person(db.Model, BaseMixin, SerializerMixin):
 
     is_bot = db.Column(db.Boolean(), default=False, nullable=False)
     is_guest = db.Column(db.Boolean(), default=False, nullable=False)
+    preview_project_id = db.Column(
+        UUIDType(binary=False),
+        db.ForeignKey("project.id"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    preview_opened_at = db.Column(db.DateTime, nullable=True)
+    preview_open_until = db.Column(db.DateTime, nullable=True)
     jti = db.Column(db.String(60), nullable=True, unique=True)
     expiration_date = db.Column(db.Date(), nullable=True)
     is_generated_from_ldap = db.Column(db.Boolean(), default=False)
@@ -375,6 +395,10 @@ class Person(db.Model, BaseMixin, SerializerMixin):
             "role": fields.serialize_value(self.role),
             "desktop_login": self.desktop_login,
             "is_bot": self.is_bot,
+            # Kitsu versions the avatar URL with it.
+            "updated_at": fields.serialize_value(
+                self.updated_at, milliseconds=milliseconds
+            ),
         }
 
     def present_client(self):

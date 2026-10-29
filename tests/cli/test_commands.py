@@ -1,24 +1,22 @@
 import datetime
 import io
 import json as stdlib_json
-from contextlib import redirect_stdout
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from alembic.script import ScriptDirectory
 from click.testing import CliRunner
 
 from tests.base import ApiDBTestCase
-
-from zou.app.models.person import Person
-from zou.app.services import preview_files_service
-from zou.app.stores import auth_tokens_store, file_store
 from zou.app.commands import commands_service as commands
-from zou.app.utils import fields
-from zou.app.utils import progress as progress_utils
 from zou.app.models.entity_type import EntityType
+from zou.app.models.person import Person
 from zou.app.models.plugin import Plugin
 from zou.app.models.task_type import TaskType
+from zou.app.services import preview_files_service
+from zou.app.stores import auth_tokens_store, file_store
+from zou.app.utils import fields, progress as progress_utils
 from zou.cli import _get_alembic_config, cli
 
 
@@ -404,7 +402,7 @@ class CreateAdminCommandTestCase(ApiDBTestCase):
             ["create-admin", "admin@example.com", "--password", "mysecretpwd"],
         )
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Admin successfully created", result.output)
+        self.assertIn("Admin admin@example.com created", result.output)
 
         person = Person.get_by(email="admin@example.com")
         self.assertEqual(person.role.code, "admin")
@@ -423,7 +421,9 @@ class CreateAdminCommandTestCase(ApiDBTestCase):
             cli, ["create-admin", self.person.email, "--password", "unused"]
         )
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("upgraded to 'admin'", result.output)
+        self.assertIn(
+            f"User {self.person.email} upgraded to admin", result.output
+        )
         self.assertEqual(Person.get(self.person.id).role.code, "admin")
 
     def test_create_admin_refuses_a_short_password(self):

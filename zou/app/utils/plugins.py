@@ -1,25 +1,25 @@
-import logging
 import email.utils
 import importlib
 import importlib.util
+import logging
 import os
-import requests
-import tomlkit
-import traceback
-import semver
 import shutil
 import subprocess
-import spdx_license_list
 import sys
 import tempfile
+import traceback
 import zipfile
+from collections.abc import MutableMapping
+from pathlib import Path
 
+import requests
+import semver
+import spdx_license_list
+import tomlkit
 from alembic import command
 from alembic.config import Config
-from collections.abc import MutableMapping
-from flask import Blueprint, send_from_directory, abort, current_app
+from flask import Blueprint, abort, current_app, send_from_directory
 from flask.views import MethodView
-from pathlib import Path
 from sqlalchemy import MetaData
 from sqlalchemy.util import FacadeDict
 
@@ -157,10 +157,7 @@ def load_plugin(app, plugin_path, init_plugin=True):
     manifest = PluginManifest.from_plugin_path(plugin_path)
     plugin_module = importlib.import_module(manifest["id"])
 
-    if not hasattr(plugin_module, "routes"):
-        raise Exception(f"Plugin {manifest['id']} has no routes.")
-
-    routes = plugin_module.routes
+    routes = list(getattr(plugin_module, "routes", []))
     add_static_routes(manifest, routes)
     blueprint = Blueprint(manifest["id"], manifest["id"])
     configure_api_from_blueprint(blueprint, routes)

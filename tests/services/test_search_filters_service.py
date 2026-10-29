@@ -1,17 +1,17 @@
+from tests.services.cases import UserContextTestCase
+from zou.app.exceptions import (
+    DepartmentNotFoundException,
+    SearchFilterGroupNotFoundException,
+    SearchFilterNotFoundException,
+    WrongParameterException,
+)
 from zou.app.models.search_filter import SearchFilter
 from zou.app.models.search_filter_group import SearchFilterGroup
 from zou.app.services import (
+    cascade_deletion_service,
     projects_service,
     search_filters_service,
-    cascade_deletion_service,
 )
-from zou.app.exceptions import (
-    DepartmentNotFoundException,
-    SearchFilterNotFoundException,
-    SearchFilterGroupNotFoundException,
-    WrongParameterException,
-)
-from tests.services.cases import UserContextTestCase
 
 UNKNOWN = "00000000-0000-0000-0000-000000000000"
 
@@ -32,6 +32,10 @@ class SavedSearchTestCase(UserContextTestCase):
         self.generate_fixture_user_cg_artist()
         self.project_id = str(self.project.id)
         self.department_id = str(self.department.id)
+        # A shared filter reaches the team of its project, no further.
+        projects_service.add_team_member(
+            self.project_id, self.user_cg_artist["id"]
+        )
 
     def a_filter(self, name="mine", **kwargs):
         kwargs.setdefault("project_id", self.project_id)
@@ -388,6 +392,18 @@ class SearchFilterGroupTestCase(SavedSearchTestCase):
             with self.assertRaises(SearchFilterGroupNotFoundException):
                 search_filters_service.get_filter_group(group["id"])
         self.assertIsNone(SearchFilter.get(search_filter["id"]))
+
+    def test_remove_filter_group_leaves_the_filters_of_others(self):
+        with self.as_user(self.user_manager):
+            group, search_filter = self.a_shared_group_holding_a_filter()
+        with self.as_user():
+            other = self.a_filter(
+                is_shared=True, search_filter_group_id=group["id"]
+            )
+        with self.as_user(self.user_manager):
+            search_filters_service.remove_filter_group(group["id"])
+        self.assertIsNone(SearchFilter.get(search_filter["id"]))
+        self.assertIsNone(SearchFilter.get(other["id"]).search_filter_group_id)
 
     def test_removing_the_owner_of_a_group_drops_its_filters_everywhere(self):
         """

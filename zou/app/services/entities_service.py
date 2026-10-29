@@ -1,33 +1,30 @@
 import copy
 
-from sqlalchemy import cast, func, Text
+from sqlalchemy import Text, cast, func
 
-from zou.app.services import (
-    base_service,
-    persons_service,
-    entity_types_service,
-    subscriptions_service,
+from zou.app import db
+from zou.app.exceptions import (
+    EntityLinkNotFoundException,
+    EntityNotFoundException,
 )
-from zou.app.utils import (
-    date_helpers,
-    cache,
-    fields,
-    http_cache,
-    permissions,
-    query as query_utils,
-)
-
-from zou.app.models.entity import Entity, EntityLink, EntityConceptLink
+from zou.app.models.entity import Entity, EntityConceptLink, EntityLink
 from zou.app.models.entity_type import EntityType
 from zou.app.models.project import Project
 from zou.app.models.subscription import Subscription
 from zou.app.models.task import Task, TaskPersonLink
-
-from zou.app import db
-
-from zou.app.exceptions import (
-    EntityLinkNotFoundException,
-    EntityNotFoundException,
+from zou.app.services import (
+    base_service,
+    entity_types_service,
+    persons_service,
+    subscriptions_service,
+)
+from zou.app.utils import (
+    cache,
+    date_helpers,
+    fields,
+    http_cache,
+    permissions,
+    query as query_utils,
 )
 
 # Entity types positioned in time, as opposed to the asset types. Their
@@ -442,6 +439,17 @@ def blank_tasks_for_current_user(tasks):
     return [blank_task_for_client(task) for task in tasks]
 
 
+def blank_entity_tasks_for_current_user(entity):
+    """
+    Return given entity dict with the studio fields of its tasks blank when
+    the current user is a client on the resolved project. The entity dict
+    may come from a memoized getter, so it is copied, never changed.
+    """
+    if not permissions.has_client_permissions():
+        return entity
+    return {**entity, "tasks": blank_tasks_for_current_user(entity["tasks"])}
+
+
 def _blank_builder(name):
     """
     Return a task field builder serving the blank value of given field to
@@ -456,6 +464,7 @@ def fetch_entity_task_map(
     task_fields,
     assigned_to=False,
     compact=False,
+    for_client=None,
 ):
     """
     Shared core of the get_*_and_tasks views: fetch the tasks and the
@@ -468,9 +477,11 @@ def fetch_entity_task_map(
     task_fields, so every view keeps its exact response shape; with
     compact=True the builder produces a list of values in the order of
     task_fields instead. With assigned_to=True only the tasks assigned to
-    the current user are fetched. A client gets the studio fields blank,
-    as CLIENT_BLANK_TASK_VALUES lists them: the role is read here, so the
-    caller resolves the project before.
+    the current user are fetched. With for_client=True the studio fields
+    come blank, as CLIENT_BLANK_TASK_VALUES lists them. Left to None, the
+    role is read here, so the caller resolves the project before; a
+    memoized caller passes False, and its route blanks after the access
+    check.
     """
     task_query = apply_filters(
         Task.query.join(Entity, Task.entity_id == Entity.id)
@@ -512,10 +523,15 @@ def fetch_entity_task_map(
     if assigned_to:
         link_query = link_query.filter(persons_service.build_assignee_filter())
 
+    if for_client is None:
+        for_client = permissions.has_client_permissions()
+    # The views without assignees in task_fields still add them below: a
+    # client gets no links at all, so none of them comes back.
     assignees_by_task = {}
-    for task_id, person_id in link_query.all():
-        if person_id:
-            assignees_by_task.setdefault(task_id, []).append(person_id)
+    if not for_client:
+        for task_id, person_id in link_query.all():
+            if person_id:
+                assignees_by_task.setdefault(task_id, []).append(person_id)
 
     tasks_by_entity = {}
     for row in task_rows:
@@ -534,7 +550,7 @@ def fetch_entity_task_map(
         )
         for name in task_fields
     ]
-    if permissions.has_client_permissions():
+    if for_client:
         client_builders = []
         for name, builder in builders:
             if name in CLIENT_BLANK_TASK_VALUES:

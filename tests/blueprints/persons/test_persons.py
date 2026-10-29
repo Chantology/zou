@@ -1,17 +1,15 @@
 import urllib.parse
-
 from unittest import mock
 
 from tests.base import ApiDBTestCase
-
 from zou.app.models.day_off import DayOff
 from zou.app.models.person import Person
-from zou.app.stores import auth_tokens_store
 from zou.app.services import (
     persons_service,
     projects_service,
     tasks_service,
 )
+from zou.app.stores import auth_tokens_store
 from zou.app.utils import auth, fields
 
 
@@ -178,6 +176,19 @@ class PersonRoutesTestCase(ApiDBTestCase):
         projects_service.add_team_member(self.project.id, artist["id"])
         self.log_in_cg_artist()
         read_it_through_each_route(403)
+
+    def test_the_studio_wide_day_offs_with_a_wrong_date(self):
+        self.get("/data/persons/day-offs/year", 400)
+        self.get("/data/persons/day-offs/2024/13", 400)
+        self.generate_fixture_user_cg_artist()
+        self.log_in_cg_artist()
+        self.get("/data/persons/day-offs/2024/13", 400)
+
+    def test_the_day_offs_of_a_person_with_a_wrong_date(self):
+        path = f"/data/persons/{self.person_id}/day-offs"
+        self.get(f"{path}/week/2024/60", 400)
+        self.get(f"{path}/month/2024/13", 400)
+        self.get(f"{path}/year/year", 400)
 
     def test_the_studio_wide_month_lists_what_the_caller_may_read(self):
         """
@@ -415,7 +426,7 @@ class PersonRoutesTestCase(ApiDBTestCase):
             first_name="Other",
             last_name="Admin",
             role="admin",
-            email="other.admin@gmail.com",
+            email="other.admin@example.com",
             **overrides,
         )
 

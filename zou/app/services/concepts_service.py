@@ -1,15 +1,15 @@
-from sqlalchemy import cast, Text
+from sqlalchemy import Text, cast
 from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import selectinload
 
-from zou.app.utils import (
-    cache,
-    events,
-    fields,
-    query as query_utils,
-)
-
 from zou.app import db
+from zou.app.exceptions import (
+    ConceptFolderNotFoundException,
+    ConceptNotFoundException,
+    EntityNotFoundException,
+    WrongIdFormatException,
+    WrongParameterException,
+)
 from zou.app.models.entity import (
     Entity,
     EntityConceptLink,
@@ -17,7 +17,6 @@ from zou.app.models.entity import (
 from zou.app.models.preview_file import PreviewFile
 from zou.app.models.project import Project
 from zou.app.models.task import Task
-
 from zou.app.services import (
     base_service,
     entities_service,
@@ -25,12 +24,11 @@ from zou.app.services import (
     persons_service,
     subscriptions_service,
 )
-from zou.app.exceptions import (
-    ConceptFolderNotFoundException,
-    ConceptNotFoundException,
-    WrongIdFormatException,
-    WrongParameterException,
-    EntityNotFoundException,
+from zou.app.utils import (
+    cache,
+    events,
+    fields,
+    query as query_utils,
 )
 
 CONCEPTS_AND_TASKS_TASK_FIELDS = [
@@ -89,7 +87,7 @@ def get_full_concept(concept_id):
     """
     Return given concept as a dictionary with extra data like project.
     """
-    concepts = get_concepts_and_tasks({"id": concept_id})
+    concepts = get_concepts_and_tasks({"id": concept_id}, for_client=False)
     if len(concepts) == 0:
         raise ConceptNotFoundException
     concept = concepts[0]
@@ -135,7 +133,7 @@ def get_concepts(criterions=None):
     return concepts
 
 
-def get_concepts_and_tasks(criterions=None):
+def get_concepts_and_tasks(criterions=None, for_client=None):
     """
     Get all concepts for given criterions with related tasks for each
     concept, as a list of dicts. Flat narrow queries through
@@ -205,6 +203,7 @@ def get_concepts_and_tasks(criterions=None):
         subscription_map,
         CONCEPTS_AND_TASKS_TASK_FIELDS,
         assigned_to=assigned_to,
+        for_client=for_client,
     )
 
     concept_links = apply_filters(

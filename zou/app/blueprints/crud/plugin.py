@@ -1,9 +1,10 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
 
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.models.plugin import Plugin
+from zou.app.utils.openapi import load_specs, swag_from
 
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
+SPECS = load_specs(__file__, "openapi/plugin.yml")
 
 
 class PluginsResource(BaseModelsResource):
@@ -11,7 +12,7 @@ class PluginsResource(BaseModelsResource):
         BaseModelsResource.__init__(self, Plugin)
 
     @jwt_required()
-    @swag_from("openapi/PluginsResource_get.yml")
+    @swag_from(SPECS["PluginsResource_get"])
     def get(self):
         """
         Get plugins
@@ -19,7 +20,7 @@ class PluginsResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/PluginsResource_post.yml")
+    @swag_from(SPECS["PluginsResource_post"])
     def post(self):
         """
         Create plugin
@@ -32,7 +33,7 @@ class PluginResource(BaseModelResource):
         BaseModelResource.__init__(self, Plugin)
 
     @jwt_required()
-    @swag_from("openapi/PluginResource_get.yml")
+    @swag_from(SPECS["PluginResource_get"])
     def get(self, instance_id):
         """
         Get plugin
@@ -40,7 +41,7 @@ class PluginResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/PluginResource_put.yml")
+    @swag_from(SPECS["PluginResource_put"])
     def put(self, instance_id):
         """
         Update plugin
@@ -48,7 +49,7 @@ class PluginResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/PluginResource_delete.yml")
+    @swag_from(SPECS["PluginResource_delete"])
     def delete(self, instance_id):
         """
         Delete plugin

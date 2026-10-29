@@ -1,21 +1,21 @@
-import uuid
-import os
 import csv
+import os
+import uuid
 
-from sqlalchemy.exc import IntegrityError
-
-from flask import request, current_app
+from flask import current_app, request
 from flask.views import MethodView
 from flask_jwt_extended import jwt_required
+from sqlalchemy.exc import IntegrityError
 
-from zou.app.mixin import ArgsMixin
 from zou.app import app
-from zou.app.utils import permissions, string
+from zou.app.blueprints.crud.base import build_db_error_message
+from zou.app.mixin import ArgsMixin
 from zou.app.services import (
+    metadata_descriptors_service,
     permissions_service,
     persons_service,
-    metadata_descriptors_service,
 )
+from zou.app.utils import permissions, string
 
 
 class ImportRowException(Exception):
@@ -109,7 +109,7 @@ class BaseCsvImportResource(MethodView, ArgsMixin):
                     result.append(row)
                 except IntegrityError as e:
                     raise ImportRowException(
-                        e._message(), line_number, len(result)
+                        build_db_error_message(e), line_number, len(result)
                     )
                 except RowException as e:
                     raise ImportRowException(
@@ -128,7 +128,9 @@ class BaseCsvImportResource(MethodView, ArgsMixin):
                         len(result),
                     )
                 except Exception as e:
-                    raise ImportRowException(str(e), line_number, len(result))
+                    raise ImportRowException(
+                        build_db_error_message(e), line_number, len(result)
+                    )
         return result
 
     def get_dialect(self, csvfile):

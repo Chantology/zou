@@ -23,25 +23,26 @@ matching error handler. Integrity/statement errors are caught here and
 returned as sanitized 400s (see build_db_error_message).
 """
 
-from flasgger import swag_from
 import datetime
 import math
+
 import orjson as json
 import sqlalchemy.orm as orm
-
-from flask import request, current_app
+from flask import current_app, request
 from flask.views import MethodView
 from flask_jwt_extended import jwt_required
-
+from sqlalchemy import types as sa_types
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.inspection import inspect
-from sqlalchemy import types as sa_types
 
-from zou.app.mixin import ArgsMixin
-from zou.app.utils import events, fields, permissions, query
 from zou.app.exceptions import (
     WrongParameterException,
 )
+from zou.app.mixin import ArgsMixin
+from zou.app.utils import events, fields, permissions, query
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi/base.yml")
 
 
 def build_db_error_message(exception):
@@ -243,7 +244,7 @@ class BaseModelsResource(MethodView, ArgsMixin):
         return instance.serialize(relations=True)
 
     @jwt_required()
-    @swag_from("openapi/BaseModelsResource_get.yml")
+    @swag_from(SPECS["BaseModelsResource_get"])
     def get(self):
         """
         Get models
@@ -300,7 +301,7 @@ class BaseModelsResource(MethodView, ArgsMixin):
             raise
 
     @jwt_required()
-    @swag_from("openapi/BaseModelsResource_post.yml")
+    @swag_from(SPECS["BaseModelsResource_post"])
     def post(self):
         """
         Create model
@@ -402,8 +403,8 @@ class BaseModelResource(MethodView, ArgsMixin):
             if key in columns and isinstance(value, str) and value != "":
                 try:
                     # fromisoformat accepts what PostgreSQL does for ISO
-                    # 8601 (date only, time offsets...); Z must be mapped
-                    # to +00:00 while Python 3.10 is supported.
+                    # 8601 (date only, time offsets...), but not a Z after
+                    # a date alone (2026-04-01Z): map Z to +00:00.
                     datetime.datetime.fromisoformat(
                         value.replace("Z", "+00:00")
                     )
@@ -423,7 +424,7 @@ class BaseModelResource(MethodView, ArgsMixin):
         return data
 
     @jwt_required()
-    @swag_from("openapi/BaseModelResource_get.yml")
+    @swag_from(SPECS["BaseModelResource_get"])
     def get(self, instance_id):
         """
         Get model
@@ -458,7 +459,7 @@ class BaseModelResource(MethodView, ArgsMixin):
         return instance_dict
 
     @jwt_required()
-    @swag_from("openapi/BaseModelResource_put.yml")
+    @swag_from(SPECS["BaseModelResource_put"])
     def put(self, instance_id):
         """
         Update model
@@ -490,7 +491,7 @@ class BaseModelResource(MethodView, ArgsMixin):
             return {"message": build_db_error_message(exception)}, 400
 
     @jwt_required()
-    @swag_from("openapi/BaseModelResource_delete.yml")
+    @swag_from(SPECS["BaseModelResource_delete"])
     def delete(self, instance_id):
         """
         Delete model

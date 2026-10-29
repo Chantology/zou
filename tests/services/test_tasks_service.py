@@ -1,37 +1,32 @@
 # -*- coding: UTF-8 -*-
-import datetime
 import uuid
-
 from unittest import mock
 
+import pytest
 from sqlalchemy.orm.exc import StaleDataError
 
 from tests.base import ApiDBTestCase
-
-from zou.app.models.comment import Comment
-from zou.app.models.task import Task
-from zou.app.models.task_type import TaskType
-from zou.app.services import (
-    comments_service,
-    deletion_service,
-    projects_service,
-    tasks_service,
-    task_types_service,
-    time_spents_service,
-    todos_service,
-)
-
-from zou.app.exceptions import (
-    RevisionAlreadyExistsException,
-    TaskNotFoundException,
-)
 from tests.services.cases import TaskTestCase
 from zou.app.exceptions import (
     EntityNotFoundException,
     PreviewFileNotFoundException,
+    RevisionAlreadyExistsException,
+    TaskNotFoundException,
 )
-from zou.app.services import assets_service, deletion_service
-import pytest
+from zou.app.models.comment import Comment
+from zou.app.models.task import Task
+from zou.app.models.task_type import TaskType
+from zou.app.services import (
+    assets_service,
+    comments_service,
+    deletion_service,
+    projects_service,
+    task_types_service,
+    tasks_service,
+    time_spents_service,
+    todos_service,
+)
+from zou.app.utils import date_helpers
 
 
 class TaskCreationTestCase(TaskTestCase):
@@ -127,7 +122,9 @@ class TaskUpdateTestCase(TaskTestCase):
 
         self.assertEqual(str(self.task.task_status_id), wfa_status["id"])
         self.assertIsNotNone(self.task.end_date)
-        self.assertLess(self.task.end_date, datetime.datetime.now())
+        self.assertLessEqual(
+            self.task.end_date, date_helpers.get_utc_now_datetime()
+        )
 
     def test_update_task_resets_dates_on_status_rollback(self):
         wfa_status = self.generate_fixture_task_status_wfa()

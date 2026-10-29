@@ -1,15 +1,14 @@
-import pyotp
-import pytest
-import orjson as json
-
 from datetime import timedelta
 
-from tests.base import ApiDBTestCase
+import orjson as json
+import pyotp
+import pytest
 
-from zou.app.utils import auth, date_helpers, fields
+from tests.base import ApiDBTestCase
 from zou.app.models.person import Person
-from zou.app.stores import auth_tokens_store
 from zou.app.services import auth_service, persons_service
+from zou.app.stores import auth_tokens_store
+from zou.app.utils import auth, date_helpers, fields
 
 pytestmark = pytest.mark.real_bcrypt
 
@@ -295,7 +294,7 @@ class AuthTestCase(ApiDBTestCase):
 
     def test_register_route_is_gone(self):
         subscription_data = {
-            "email": "alice@doe.com",
+            "email": "alice@example.com",
             "password": "12345678",
             "password_2": "12345678",
             "first_name": "Alice",
@@ -399,7 +398,7 @@ class AuthTestCase(ApiDBTestCase):
         self.assertIsNotAuthenticated({}, code=422)
         # Unknown and known emails must return the same response so the
         # endpoint cannot be used to enumerate accounts.
-        data = {"email": "fake_email@test.com"}
+        data = {"email": "fake_email@example.com"}
         response = self.post("auth/reset-password", data, 200)
         self.assertTrue(response["success"])
         data = {"email": email}
@@ -463,7 +462,7 @@ class AuthTestCase(ApiDBTestCase):
 
         self.log_in(user_artist["email"])
         self.log_in(user_manager["email"])
-        self.log_in("john.did@gmail.com")
+        self.log_in("john.did@example.com")
         login_logs = self.get("/data/events/login-logs/last")
         self.assertEqual(len(login_logs), 4)
         login_logs = self.get("/data/events/login-logs/last?limit=2")
@@ -933,7 +932,7 @@ class EmailOTPTestCase(ApiDBTestCase):
         known = self.app.get(
             f"auth/email-otp?email={self.credentials['email']}"
         )
-        unknown = self.app.get("auth/email-otp?email=unknown@test.com")
+        unknown = self.app.get("auth/email-otp?email=unknown@example.com")
         self.assertEqual(unknown.status_code, 200)
         self.assertEqual(unknown.data, known.data)
 
@@ -1207,6 +1206,17 @@ class TOTPTestCase(ApiDBTestCase):
         data = self.call_2fa(
             "put", "auth/recovery-codes", headers, "000000", status=400
         )
+        self.assertTrue(data["wrong_OTP"])
+
+    def test_recovery_codes_without_code(self):
+        """
+        PUT /auth/recovery-codes without any code answers like a wrong
+        code, not with a server error.
+        """
+        _, headers = self.login()
+        self.enable_totp(headers)
+
+        data = self.call_2fa("put", "auth/recovery-codes", headers, status=400)
         self.assertTrue(data["wrong_OTP"])
 
 

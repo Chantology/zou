@@ -1,20 +1,21 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
 from sqlalchemy import or_
 
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
+from zou.app.exceptions import WrongParameterException
 from zou.app.models.playlist import Playlist
 from zou.app.services import (
+    cascade_deletion_service,
     permissions_service,
     persons_service,
     playlists_service,
     preview_files_service,
     user_service,
-    cascade_deletion_service,
 )
-from zou.app.exceptions import WrongParameterException
-
-from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.utils import fields, permissions
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi/playlist.yml")
 
 
 def _check_for_entity(data):
@@ -74,7 +75,7 @@ class PlaylistsResource(BaseModelsResource):
         )
 
     @jwt_required()
-    @swag_from("openapi/PlaylistsResource_get.yml")
+    @swag_from(SPECS["PlaylistsResource_get"])
     def get(self):
         """
         Get playlists
@@ -82,7 +83,7 @@ class PlaylistsResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/PlaylistsResource_post.yml")
+    @swag_from(SPECS["PlaylistsResource_post"])
     def post(self):
         """
         Create playlist
@@ -117,7 +118,7 @@ class PlaylistResource(BaseModelResource):
         permissions_service.check_playlist_read_access(playlist)
 
     @jwt_required()
-    @swag_from("openapi/PlaylistResource_get.yml")
+    @swag_from(SPECS["PlaylistResource_get"])
     def get(self, instance_id):
         """
         Get playlist
@@ -125,7 +126,7 @@ class PlaylistResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/PlaylistResource_put.yml")
+    @swag_from(SPECS["PlaylistResource_put"])
     def put(self, instance_id):
         """
         Update playlist
@@ -133,7 +134,7 @@ class PlaylistResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/PlaylistResource_delete.yml")
+    @swag_from(SPECS["PlaylistResource_delete"])
     def delete(self, instance_id):
         """
         Delete playlist

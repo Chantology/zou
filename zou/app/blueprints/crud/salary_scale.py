@@ -1,15 +1,13 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
 
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
-
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.exceptions import WrongParameterException
-
 from zou.app.models.department import Department
-from zou.app.models.salary_scale import SalaryScale
-
-
 from zou.app.models.person import POSITION_TYPES, SENIORITY_TYPES
+from zou.app.models.salary_scale import SalaryScale
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi/salary_scale.yml")
 
 
 class SalaryScalesResource(BaseModelsResource):
@@ -20,7 +18,7 @@ class SalaryScalesResource(BaseModelsResource):
         raise WrongParameterException("Salary scales cannot be created")
 
     @jwt_required()
-    @swag_from("openapi/SalaryScalesResource_get.yml")
+    @swag_from(SPECS["SalaryScalesResource_get"])
     def get(self):
         """
         Get salary scales
@@ -68,7 +66,7 @@ class SalaryScaleResource(BaseModelResource):
         self.protected_fields.append("department_id")
 
     @jwt_required()
-    @swag_from("openapi/SalaryScaleResource_get.yml")
+    @swag_from(SPECS["SalaryScaleResource_get"])
     def get(self, instance_id):
         """
         Get salary scale
@@ -76,7 +74,7 @@ class SalaryScaleResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/SalaryScaleResource_put.yml")
+    @swag_from(SPECS["SalaryScaleResource_put"])
     def put(self, instance_id):
         """
         Update salary scale
@@ -84,7 +82,7 @@ class SalaryScaleResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/SalaryScaleResource_delete.yml")
+    @swag_from(SPECS["SalaryScaleResource_delete"])
     def delete(self, instance_id):
         """
         Delete salary scale

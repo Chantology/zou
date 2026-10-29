@@ -1,18 +1,25 @@
-from flasgger import swag_from
 from flask import current_app
-
+from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import StatementError
 
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.exceptions import WrongParameterException
-from flask_jwt_extended import jwt_required
-
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
-
 from zou.app.models.entity import Entity
+from zou.app.models.preview_file import VALIDATION_STATUSES
 from zou.app.models.project import Project
 from zou.app.models.working_file import WorkingFile
 from zou.app.services import files_service, permissions_service, user_service
 from zou.app.utils import permissions
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi/working_file.yml")
+
+
+def check_validation_status(data):
+    if "validation_status" in data and data["validation_status"] not in [
+        status for status, _ in VALIDATION_STATUSES
+    ]:
+        raise WrongParameterException("Invalid validation_status")
 
 
 class WorkingFilesResource(BaseModelsResource):
@@ -31,7 +38,7 @@ class WorkingFilesResource(BaseModelsResource):
         return True
 
     @jwt_required()
-    @swag_from("openapi/WorkingFilesResource_get.yml")
+    @swag_from(SPECS["WorkingFilesResource_get"])
     def get(self):
         """
         Get working files
@@ -39,12 +46,17 @@ class WorkingFilesResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/WorkingFilesResource_post.yml")
+    @swag_from(SPECS["WorkingFilesResource_post"])
     def post(self):
         """
         Create working file
         """
         return super().post()
+
+    def update_data(self, data):
+        data = super().update_data(data)
+        check_validation_status(data)
+        return data
 
     def add_project_permission_filter(self, query):
         """
@@ -73,11 +85,11 @@ class WorkingFileResource(BaseModelResource):
 
     def check_update_permissions(self, instance, data):
         working_file = files_service.get_working_file(instance["id"])
-        permissions_service.check_task_action_access(working_file["task_id"])
+        permissions_service.check_task_work_access(working_file["task_id"])
         return True
 
     @jwt_required()
-    @swag_from("openapi/WorkingFileResource_put.yml")
+    @swag_from(SPECS["WorkingFileResource_put"])
     def put(self, instance_id):
         """
         Update working file
@@ -85,7 +97,7 @@ class WorkingFileResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/WorkingFileResource_delete.yml")
+    @swag_from(SPECS["WorkingFileResource_delete"])
     def delete(self, instance_id):
         """
         Delete working file
@@ -93,7 +105,7 @@ class WorkingFileResource(BaseModelResource):
         return super().delete(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/WorkingFileResource_get.yml")
+    @swag_from(SPECS["WorkingFileResource_get"])
     def get(self, instance_id):
         """
         Get working file
@@ -109,6 +121,11 @@ class WorkingFileResource(BaseModelResource):
 
         except ValueError:
             raise WrongParameterException("Invalid value.")
+
+    def update_data(self, data, instance_id):
+        data = super().update_data(data, instance_id)
+        check_validation_status(data)
+        return data
 
     def post_update(self, instance_dict, data):
         files_service.clear_working_file_cache(instance_dict["id"])

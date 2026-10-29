@@ -1,40 +1,39 @@
 from datetime import date, timedelta
+
+from sqlalchemy import Text, and_, cast, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import aliased
-from sqlalchemy import Text, and_, cast, delete, func, literal, select, update
 
-
-from zou.app.models.entity import Entity
-from zou.app.models.entity_type import EntityType
-from zou.app.models.milestone import Milestone
-from zou.app.models.project import Project
-from zou.app.models.schedule_item import ScheduleItem
-from zou.app.models.schedule_segment import ScheduleSegment
-from zou.app.models.task import Task, TaskPersonLink
-from zou.app.models.task_type import TaskType
-from zou.app.models.production_schedule_version import (
-    ProductionScheduleVersion,
-    ProductionScheduleVersionTaskLink,
-    ProductionScheduleVersionTaskLinkPersonLink,
-)
-from zou.app.utils import events, fields, cache
-from zou.app.services import (
-    assets_service,
-    base_service,
-    edits_service,
-    shots_service,
-    tasks_service,
-    projects_service,
-    entity_types_service,
-)
 from zou.app import db
-
 from zou.app.exceptions import (
     ProductionScheduleVersionNotFoundException,
     ScheduleItemNotFoundException,
     WrongParameterException,
 )
+from zou.app.models.entity import Entity
+from zou.app.models.entity_type import EntityType
+from zou.app.models.milestone import Milestone
 from zou.app.models.person import Person
+from zou.app.models.production_schedule_version import (
+    ProductionScheduleVersion,
+    ProductionScheduleVersionTaskLink,
+    ProductionScheduleVersionTaskLinkPersonLink,
+)
+from zou.app.models.project import Project
+from zou.app.models.schedule_item import ScheduleItem
+from zou.app.models.schedule_segment import ScheduleSegment
+from zou.app.models.task import Task, TaskPersonLink
+from zou.app.models.task_type import TaskType
+from zou.app.services import (
+    assets_service,
+    base_service,
+    edits_service,
+    entity_types_service,
+    projects_service,
+    shots_service,
+    tasks_service,
+)
+from zou.app.utils import cache, events, fields
 
 
 def clear_production_schedule_version_cache(production_schedule_version_id):
@@ -59,15 +58,28 @@ def get_schedule_items(project_id):
 
 def get_task_types_schedule_items(project_id):
     """
-    Return all schedule items for given project. If no schedule item exists
-    for a given task type, it creates one.
+    Return the schedule items of the task types given project has tasks
+    for. If no schedule item exists for one of them, it creates one. When
+    the project settings list task types, the other ones are left out: a
+    task type removed from the settings keeps its tasks and its schedule
+    item, which comes back if the task type is added again.
     """
+    project_task_type_ids = {
+        str(task_type.id)
+        for task_type in projects_service.get_project_task_types_raw(
+            project_id
+        )
+    }
     task_types = tasks_service.get_task_types_for_project(project_id)
     task_types = [
         task_type
         for task_type in task_types
         if task_type["for_entity"]
         in ["Asset", "Shot", "Sequence", "Episode", "Edit"]
+        and (
+            not project_task_type_ids
+            or task_type["id"] in project_task_type_ids
+        )
     ]
     task_type_map = base_service.get_model_map_from_array(task_types)
     schedule_items = set(
@@ -81,7 +93,7 @@ def get_task_types_schedule_items(project_id):
     }
 
     new_schedule_items = set()
-    schedule_item_to_remove = {
+    left_out_schedule_items = {
         schedule_item
         for schedule_item in schedule_items
         if schedule_item.task_type_id is not None
@@ -104,7 +116,7 @@ def get_task_types_schedule_items(project_id):
             )
 
     schedule_items = (
-        schedule_items.union(new_schedule_items) - schedule_item_to_remove
+        schedule_items.union(new_schedule_items) - left_out_schedule_items
     )
     return sorted(
         [schedule_item.present() for schedule_item in schedule_items],
@@ -255,21 +267,45 @@ def get_edits_schedule_items(project_id, task_type_id, episode_id=None):
     )
 
 
+def _is_untouched(schedule_item):
+    """
+    Whether nobody moved the schedule item since its creation. The two
+    timestamps are set by separate clock reads on creation, a second apart
+    at most.
+    """
+    return (
+        schedule_item.updated_at is None
+        or schedule_item.updated_at - schedule_item.created_at
+        < timedelta(seconds=1)
+    )
+
+
 def get_entity_schedule_items(
     project_id, task_type_id, to_create, to_create_map, existing_schedule_items
 ):
     """
     Complete the existing schedule items with one item per entity that has
     none yet, drop the ones whose entity is gone, and return the whole set
-    sorted by entity name.
+    sorted by entity name. An item nobody moved yet, new or old, shows at
+    the bar of its task type, so the schedule draws it where the task type
+    is planned; without that bar a new item takes a day from today.
     """
     schedule_item_map = {
         str(schedule_item.object_id): schedule_item
         for schedule_item in existing_schedule_items
     }
+    task_type_schedule_item = ScheduleItem.get_by(
+        project_id=project_id, task_type_id=task_type_id, object_id=None
+    )
+    if task_type_schedule_item is not None:
+        start_date = task_type_schedule_item.start_date
+        end_date = task_type_schedule_item.end_date
+    else:
+        start_date = date.today()
+        end_date = date.today() + timedelta(days=1)
 
     new_schedule_items = set()
-    schedule_item_to_remove = {
+    left_out_schedule_items = {
         schedule_item
         for schedule_item in existing_schedule_items
         if schedule_item.object_id is not None
@@ -280,8 +316,8 @@ def get_entity_schedule_items(
         if entity["id"] not in schedule_item_map:
             new_schedule_item = ScheduleItem.create(
                 project_id=project_id,
-                start_date=date.today(),
-                end_date=date.today() + timedelta(days=1),
+                start_date=start_date,
+                end_date=end_date,
                 object_id=entity["id"],
                 task_type_id=task_type_id,
             )
@@ -294,13 +330,18 @@ def get_entity_schedule_items(
 
     schedule_items = (
         existing_schedule_items.union(new_schedule_items)
-        - schedule_item_to_remove
+        - left_out_schedule_items
     )
 
     results = []
     for schedule_item in schedule_items:
         result = schedule_item.present()
         result["name"] = to_create_map[result["object_id"]]["name"]
+        if task_type_schedule_item is not None and _is_untouched(
+            schedule_item
+        ):
+            result["start_date"] = start_date.isoformat()
+            result["end_date"] = end_date.isoformat()
         results.append(result)
 
     return sorted(results, key=lambda x: x["name"])

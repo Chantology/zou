@@ -1,33 +1,31 @@
-from sqlalchemy import cast, Text
-from sqlalchemy.orm import aliased
+from sqlalchemy import Text, cast
 from sqlalchemy.exc import StatementError
-
-from zou.app.utils import (
-    cache,
-    events,
-    fields,
-    query as query_utils,
-)
+from sqlalchemy.orm import aliased
 
 from zou.app import db
+from zou.app.exceptions import (
+    EditNotFoundException,
+    WrongIdFormatException,
+)
 from zou.app.models.entity import (
     Entity,
     EntityVersion,
 )
 from zou.app.models.project import Project
 from zou.app.models.task import Task
-
 from zou.app.services import (
     base_service,
     entities_service,
     entity_types_service,
+    metadata_descriptors_service,
     persons_service,
     subscriptions_service,
-    metadata_descriptors_service,
 )
-from zou.app.exceptions import (
-    EditNotFoundException,
-    WrongIdFormatException,
+from zou.app.utils import (
+    cache,
+    events,
+    fields,
+    query as query_utils,
 )
 
 EDITS_AND_TASKS_TASK_FIELDS = [
@@ -87,7 +85,7 @@ def get_full_edit(edit_id):
     """
     Return given edit as a dictionary with extra data like project.
     """
-    edits = get_edits_and_tasks({"id": edit_id})
+    edits = get_edits_and_tasks({"id": edit_id}, for_client=False)
     if len(edits) == 0:
         raise EditNotFoundException
     return edits[0]
@@ -129,7 +127,7 @@ def get_edits(criterions=None):
     )
 
 
-def get_edits_and_tasks(criterions=None):
+def get_edits_and_tasks(criterions=None, for_client=None):
     """
     Get all edits for given criterions with related tasks for each edit,
     as a list of dicts. Flat narrow queries through
@@ -200,6 +198,7 @@ def get_edits_and_tasks(criterions=None):
         subscription_map,
         EDITS_AND_TASKS_TASK_FIELDS,
         assigned_to=assigned_to,
+        for_client=for_client,
     )
 
     not_allowed_map = None

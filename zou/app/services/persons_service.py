@@ -1,40 +1,37 @@
 import datetime
 import logging
+import random
+import string
 import urllib.parse
-
 from calendar import monthrange
-from dateutil import relativedelta
 
+from dateutil import relativedelta
+from flask_jwt_extended import create_access_token, current_user, get_jti
 from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import selectinload
 
-from flask_jwt_extended import create_access_token, get_jti, current_user
-
+from zou.app import config, db, file_store
+from zou.app.exceptions import (
+    PersonInProtectedAccounts,
+    PersonNotFoundException,
+    SSOIdentityMismatchException,
+    WrongParameterException,
+)
 from zou.app.models.department import Department
 from zou.app.models.desktop_login_log import DesktopLoginLog
 from zou.app.models.person import Person
+from zou.app.models.project import ProjectPersonLink
 from zou.app.models.studio import Studio
 from zou.app.models.task import Task
 from zou.app.models.time_spent import TimeSpent
-
-from zou.app import config, file_store, db
-from zou.app.utils import fields, events, cache, emails, date_helpers
-from zou.app.utils.email_i18n import get_email_translation
 from zou.app.services import (
     index_service,
-    templates_service,
     organisation_service,
+    templates_service,
 )
 from zou.app.stores import auth_tokens_store
-from zou.app.exceptions import (
-    PersonNotFoundException,
-    SSOIdentityMismatchException,
-    PersonInProtectedAccounts,
-    WrongParameterException,
-)
-from zou.app.models.project import ProjectPersonLink
-import random
-import string
+from zou.app.utils import cache, date_helpers, emails, events, fields
+from zou.app.utils.email_i18n import get_email_translation
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +71,7 @@ def get_persons(minimal=False, include_guests=False):
     """
     persons = []
     query = Person.query.options(selectinload(Person.departments))
+    query = query.filter(Person.preview_project_id.is_(None))
     if not include_guests:
         query = query.filter(Person.is_guest.is_(False))
     for person in query.all():
@@ -90,7 +88,11 @@ def get_active_persons():
     Return all persons with flag active set to True. Guests are excluded.
     """
     persons = (
-        Person.query.filter(Person.active, Person.is_guest.isnot(True))
+        Person.query.filter(
+            Person.active,
+            Person.is_guest.isnot(True),
+            Person.preview_project_id.is_(None),
+        )
         .order_by(Person.first_name)
         .order_by(Person.last_name)
         .all()
@@ -166,26 +168,34 @@ def get_person_raw(person_id):
 
 
 @cache.memoize_function(120)
-def get_person(person_id, unsafe=False, relations=True):
+def get_person(person_id, unsafe=False, relations=True, minimal=False):
     """
     Return given person as a dictionary.
     """
     person = get_person_raw(person_id)
     if unsafe:
         return person.serialize(relations=relations)
+    elif minimal:
+        return person.present_minimal(relations=relations)
     else:
         return person.serialize_safe(relations=relations)
 
 
-def get_persons_by_ids(person_ids):
+def get_persons_by_ids(person_ids, minimal=False):
     """
-    Return persons matching given ids as a list of safe dictionaries.
-    Single query instead of one per person.
+    Return persons matching given ids as a list of safe dictionaries, or of
+    minimal ones. One query for the persons, plus one for the departments of
+    the minimal ones, instead of one per person.
     """
     if not person_ids:
         return []
-    persons = Person.query.filter(Person.id.in_(person_ids)).all()
-    return [person.serialize_safe() for person in persons]
+    query = Person.query.filter(Person.id.in_(person_ids))
+    if minimal:
+        query = query.options(selectinload(Person.departments))
+        return [
+            person.present_minimal(relations=True) for person in query.all()
+        ]
+    return [person.serialize_safe() for person in query.all()]
 
 
 def build_short_person(person):
@@ -254,6 +264,7 @@ def count_active_users():
         Person.active,
         Person.is_bot.isnot(True),
         Person.is_guest.isnot(True),
+        Person.preview_project_id.is_(None),
     ).count()
 
 
@@ -643,7 +654,14 @@ def create_desktop_login_logs(person_id, date):
 def update_person_last_presence(person_id):
     """
     Update person presence field with the most recent time spent or
-    desktop login log for this person.
+    desktop login log for this person. Return True when the field changed.
+
+    It runs for every new time spent and desktop login, so it writes the
+    field alone, and only when the day changes: no updated_at change
+    (Kitsu puts it in the avatar URL), no reindex, no person cache clear
+    for the whole instance, and no person:update that makes every connected
+    client reload the person. Kitsu never reads the field, and the memoized
+    persons catch up when they expire.
     """
     log = (
         DesktopLoginLog.query.filter(DesktopLoginLog.person_id == person_id)
@@ -663,9 +681,17 @@ def update_person_last_presence(person_id):
     if time_spent is not None:
         dates.append(time_spent.date)
     date = max(dates, default=None)
-    return update_person(
-        person_id, {"last_presence": date}, bypass_protected_accounts=True
+    changed = Person.query.filter(
+        Person.id == person_id,
+        Person.last_presence.is_distinct_from(date),
+    ).update(
+        # Set to itself, updated_at keeps its value instead of taking the
+        # onupdate default.
+        {"last_presence": date, "updated_at": Person.updated_at},
+        synchronize_session=False,
     )
+    Person.commit()
+    return changed > 0
 
 
 def get_presence_logs(year, month):
@@ -826,6 +852,7 @@ def is_user_limit_reached():
         Person.active,
         Person.is_bot.isnot(True),
         Person.is_guest.isnot(True),
+        Person.preview_project_id.is_(None),
     ).count()
     return nb_active_users >= organisation_service.get_user_limit()
 

@@ -1,16 +1,16 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
 
-from zou.app.models.custom_action import CustomAction
-
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.exceptions import WrongParameterException
-
+from zou.app.models.custom_action import CustomAction
 from zou.app.services import (
     custom_actions_service,
     permissions_service,
     user_service,
 )
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi/custom_action.yml")
 
 
 class CustomActionsResource(BaseModelsResource):
@@ -32,7 +32,7 @@ class CustomActionsResource(BaseModelsResource):
         return data
 
     @jwt_required()
-    @swag_from("openapi/CustomActionsResource_get.yml")
+    @swag_from(SPECS["CustomActionsResource_get"])
     def get(self):
         """
         Get custom actions
@@ -40,7 +40,7 @@ class CustomActionsResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/CustomActionsResource_post.yml")
+    @swag_from(SPECS["CustomActionsResource_post"])
     def post(self):
         """
         Create custom action
@@ -57,7 +57,7 @@ class CustomActionResource(BaseModelResource):
         BaseModelResource.__init__(self, CustomAction)
 
     @jwt_required()
-    @swag_from("openapi/CustomActionResource_get.yml")
+    @swag_from(SPECS["CustomActionResource_get"])
     def get(self, instance_id):
         """
         Get custom action
@@ -65,7 +65,7 @@ class CustomActionResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/CustomActionResource_put.yml")
+    @swag_from(SPECS["CustomActionResource_put"])
     def put(self, instance_id):
         """
         Update custom action
@@ -73,7 +73,7 @@ class CustomActionResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/CustomActionResource_delete.yml")
+    @swag_from(SPECS["CustomActionResource_delete"])
     def delete(self, instance_id):
         """
         Delete custom action

@@ -1,12 +1,9 @@
 from tests.base import ApiDBTestCase
-
 from zou.app.models.entity_type import EntityType
 from zou.app.models.task_type import TaskType
-
 from zou.app.services import (
     entity_types_service,
 )
-
 from zou.app.utils import fields
 
 
@@ -34,6 +31,11 @@ class EntityTypeTestCase(ApiDBTestCase):
 
         entity_types = self.get("data/entity-types")
         self.assertEqual(len(entity_types), 4)
+
+    def test_create_entity_type_with_a_taken_name(self):
+        self.post("data/entity-types", {"name": "CAMERA"}, 400)
+        self.post("data/entity-types", {"name": "Camer_"})
+        self.post("data/entity-types", {"name": "C%"})
 
     def test_create_asset_type_with_task_types(self):
         self.generate_fixture_department()

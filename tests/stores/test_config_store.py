@@ -1,11 +1,10 @@
 from tests.base import ApiDBTestCase
-
 from zou.app import config
-from zou.app.stores import config_store
 from zou.app.services import (
-    persons_service,
     organisation_service,
+    persons_service,
 )
+from zou.app.stores import config_store
 
 
 class ConfigStoreTestCase(ApiDBTestCase):
@@ -69,7 +68,7 @@ class ConfigStoreTestCase(ApiDBTestCase):
         data = {
             "first_name": "Test",
             "last_name": "User",
-            "email": "test.limit@gmail.com",
+            "email": "test.limit@example.com",
         }
         resp = self.post("data/persons", data, 400)
         self.assertEqual(resp["data"]["limit"], 1)
@@ -82,7 +81,7 @@ class ConfigStoreTestCase(ApiDBTestCase):
         data = {
             "first_name": "Test",
             "last_name": "User",
-            "email": "test.limit@gmail.com",
+            "email": "test.limit@example.com",
         }
         resp = self.post("data/persons", data, 201)
         self.assertEqual(resp["first_name"], "Test")

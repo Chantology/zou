@@ -18,13 +18,20 @@ from typing import Optional
 from sqlalchemy import and_, any_, cast
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.sql import func
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.sql import func
 
 from zou.app import db
-from zou.app.utils import events
-
+from zou.app.exceptions import (
+    EntityNotFoundException,
+    EpisodeNotFoundException,
+    PersonNotFoundException,
+    PreviewFileNotFoundException,
+    RevisionAlreadyExistsException,
+    TaskNotFoundException,
+    WrongParameterException,
+)
 from zou.app.models.comment import (
     Comment,
 )
@@ -38,43 +45,31 @@ from zou.app.models.project import (
     ProjectTaskTypeLink,
 )
 from zou.app.models.task import Task, TaskPersonLink
-from zou.app.models.task_type import TaskType
 from zou.app.models.task_status import TaskStatus
+from zou.app.models.task_type import TaskType
 from zou.app.models.time_spent import TimeSpent
-
-from zou.app.utils import (
-    cache,
-    fields,
-    date_helpers,
-)
-
-
-from zou.app.exceptions import (
-    EpisodeNotFoundException,
-    PersonNotFoundException,
-    RevisionAlreadyExistsException,
-    TaskNotFoundException,
-    WrongParameterException,
-)
-
 from zou.app.services import (
     assets_service,
     base_service,
     concepts_service,
+    departments_service,
     edits_service,
     entities_service,
+    entity_types_service,
     files_service,
     persons_service,
     projects_service,
     shots_service,
-    departments_service,
-    entity_types_service,
     subscriptions_service,
     task_types_service,
+    tasks_service,
 )
-from zou.app.exceptions import EntityNotFoundException
-from zou.app.exceptions import PreviewFileNotFoundException
-from zou.app.services import tasks_service
+from zou.app.utils import (
+    cache,
+    date_helpers,
+    events,
+    fields,
+)
 
 
 def clear_task_cache(task_id):
@@ -896,6 +891,28 @@ def clear_assignation(task_id, person_id=None):
     return task_dict
 
 
+def check_no_preview_assignee(assignees):
+    """
+    Refuse an assignment that includes a preview account. Assignees can be
+    ids or dicts holding an id, like the task update payload accepts.
+    """
+    person_ids = [
+        str(assignee["id"] if isinstance(assignee, dict) else assignee)
+        for assignee in assignees or []
+    ]
+    person_ids = [
+        person_id for person_id in person_ids if fields.is_valid_id(person_id)
+    ]
+    if (
+        person_ids
+        and Person.query.filter(
+            Person.id.in_(person_ids), Person.preview_project_id.isnot(None)
+        ).count()
+        > 0
+    ):
+        raise WrongParameterException("A preview account can't be assigned")
+
+
 def assign_task(task_id, person_id, assigner_id=None):
     """
     Assign given person to given task. Emit a *task:assign* event.
@@ -903,6 +920,7 @@ def assign_task(task_id, person_id, assigner_id=None):
     task = get_task_raw(task_id)
     project_id = str(task.project_id)
     person = persons_service.get_person_raw(person_id)
+    check_no_preview_assignee([person_id])
     if person not in task.assignees:
         task.assignees.append(person)
     if assigner_id is not None:
@@ -979,10 +997,12 @@ def get_project_tasks_fingerprint(project_id):
     return f"{max_updated_at}:{task_count}"
 
 
-def get_full_task(task_id, user_id):
+def get_full_task(task_id, user_id, minimal_persons=False):
     """
     Return a task with everything the task page displays: entity, project,
-    task type, status, assignees, time spents and subscription state.
+    task type, status, assignees and subscription state. With
+    minimal_persons, the assignees and the assigner come as minimal person
+    dictionaries.
     """
     task = get_task(task_id, relations=True)
     task_type = task_types_service.get_task_type(task["task_type_id"])
@@ -995,7 +1015,9 @@ def get_full_task(task_id, user_id):
     is_subscribed = subscriptions_service.is_person_subscribed(
         user_id, task_id
     )
-    assignees = persons_service.get_persons_by_ids(task["assignees"])
+    assignees = persons_service.get_persons_by_ids(
+        task["assignees"], minimal=minimal_persons
+    )
 
     task.update(
         {
@@ -1011,7 +1033,9 @@ def get_full_task(task_id, user_id):
     )
 
     try:
-        assigner = persons_service.get_person(task["assigner_id"])
+        assigner = persons_service.get_person(
+            task["assigner_id"], minimal=minimal_persons
+        )
         task["assigner"] = assigner
     except PersonNotFoundException:
         pass

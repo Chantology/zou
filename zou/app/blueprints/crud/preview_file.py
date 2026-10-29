@@ -1,24 +1,25 @@
-from flasgger import swag_from
 from flask import current_app
 from flask_jwt_extended import jwt_required
-
 from sqlalchemy.exc import IntegrityError, StatementError
 
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
+from zou.app.exceptions import WrongParameterException
 from zou.app.models.preview_file import PreviewFile
-from zou.app.models.task import Task
 from zou.app.models.project import Project
 from zou.app.models.project_status import ProjectStatus
+from zou.app.models.task import Task
 from zou.app.services import (
+    deletion_service,
     permissions_service,
-    user_service,
-    tasks_service,
     persons_service,
     projects_service,
+    tasks_service,
+    user_service,
 )
-from zou.app.utils import permissions
+from zou.app.utils import fields, permissions
+from zou.app.utils.openapi import load_specs, swag_from
 
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
-from zou.app.services import deletion_service
+SPECS = load_specs(__file__, "openapi/preview_file.yml")
 
 
 class PreviewFilesResource(BaseModelsResource):
@@ -26,7 +27,7 @@ class PreviewFilesResource(BaseModelsResource):
         BaseModelsResource.__init__(self, PreviewFile)
 
     @jwt_required()
-    @swag_from("openapi/PreviewFilesResource_get.yml")
+    @swag_from(SPECS["PreviewFilesResource_get"])
     def get(self):
         """
         Get preview files
@@ -34,12 +35,30 @@ class PreviewFilesResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/PreviewFilesResource_post.yml")
+    @swag_from(SPECS["PreviewFilesResource_post"])
     def post(self):
         """
         Create preview file
         """
         return super().post()
+
+    def apply_filters(self, query, options):
+        # A preview file has no project_id column, so the generic filters
+        # drop the parameter and answer for every production: scope the
+        # rows to that project through their task. A subquery rather than
+        # a join, the permission filter already joins the task table.
+        query = super().apply_filters(query, options)
+        if "project_id" in options:
+            if not fields.is_valid_id(options["project_id"]):
+                raise WrongParameterException("Invalid project_id.")
+            query = query.filter(
+                PreviewFile.task_id.in_(
+                    Task.query.with_entities(Task.id).filter(
+                        Task.project_id == options["project_id"]
+                    )
+                )
+            )
+        return query
 
     def add_project_permission_filter(self, query):
         if not permissions.has_admin_permissions():
@@ -68,22 +87,22 @@ class PreviewFilesResource(BaseModelsResource):
 class PreviewFileResource(BaseModelResource):
     def __init__(self):
         BaseModelResource.__init__(self, PreviewFile)
+        # The update check reads the project off the stored task.
+        self.protected_fields.append("task_id")
 
     def check_read_permissions(self, preview_file):
         """
-        If it's a vendor, check if the user is working on the task.
-        If it's an artist, check if preview file belongs to user projects.
+        The preview file must belong to a project of the user, and a vendor
+        must also be working on its task.
         """
         task = tasks_service.get_task(preview_file["task_id"])
-        permissions_service.resolve_project_role(task["project_id"])
+        permissions_service.check_project_access(task["project_id"])
         if permissions.has_vendor_permissions():
             permissions_service.check_working_on_task(preview_file["task_id"])
-        else:
-            permissions_service.check_project_access(task["project_id"])
         return True
 
     @jwt_required()
-    @swag_from("openapi/PreviewFileResource_get.yml")
+    @swag_from(SPECS["PreviewFileResource_get"])
     def get(self, instance_id):
         """
         Get preview file
@@ -91,7 +110,7 @@ class PreviewFileResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/PreviewFileResource_put.yml")
+    @swag_from(SPECS["PreviewFileResource_put"])
     def put(self, instance_id):
         """
         Update preview file
@@ -144,7 +163,7 @@ class PreviewFileResource(BaseModelResource):
         return True
 
     @jwt_required()
-    @swag_from("openapi/PreviewFileResource_delete.yml")
+    @swag_from(SPECS["PreviewFileResource_delete"])
     def delete(self, instance_id):
         """
         Delete preview file

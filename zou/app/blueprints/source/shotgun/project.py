@@ -1,18 +1,17 @@
-from flasgger import swag_from
 from flask import current_app
 from flask_jwt_extended import jwt_required
-
-from zou.app.models.project import Project
-from zou.app.models.project_status import ProjectStatus
-
-from zou.app.services import file_tree_service, projects_service
 
 from zou.app.blueprints.source.shotgun.base import (
     BaseImportShotgunResource,
     ImportRemoveShotgunBaseResource,
 )
-
 from zou.app.exceptions import WrongFileTreeFileException
+from zou.app.models.project import Project
+from zou.app.models.project_status import ProjectStatus
+from zou.app.services import file_tree_service, projects_service
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class ImportShotgunProjectsResource(BaseImportShotgunResource):
@@ -20,7 +19,7 @@ class ImportShotgunProjectsResource(BaseImportShotgunResource):
         BaseImportShotgunResource.__init__(self)
 
     @jwt_required()
-    @swag_from("openapi/ImportShotgunProjectsResource_post.yml")
+    @swag_from(SPECS["ImportShotgunProjectsResource_post"])
     def post(self):
         """
         Import shotgun projects
@@ -89,7 +88,7 @@ class ImportRemoveShotgunProjectResource(ImportRemoveShotgunBaseResource):
         ImportRemoveShotgunBaseResource.__init__(self, Project)
 
     @jwt_required()
-    @swag_from("openapi/ImportRemoveShotgunProjectResource_post.yml")
+    @swag_from(SPECS["ImportRemoveShotgunProjectResource_post"])
     def post(self):
         """
         Remove shotgun project

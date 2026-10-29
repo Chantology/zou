@@ -1,33 +1,34 @@
 from flask import Blueprint
-from zou.app.utils.api import configure_api_from_blueprint
 
 from zou.app.blueprints.files.resources import (
-    WorkingFilePathResource,
+    CommentWorkingFileResource,
+    EntityOutputFilePathResource,
+    EntityOutputFilesResource,
+    EntityOutputTypeOutputFilesResource,
+    EntityOutputTypesResource,
+    EntityWorkingFilesResource,
+    FileResource,
+    GetNextEntityOutputFileRevisionResource,
+    GetNextInstanceOutputFileRevisionResource,
+    GuessFromPathResource,
+    InstanceOutputFilePathResource,
+    InstanceOutputFilesResource,
+    InstanceOutputTypeOutputFilesResource,
+    InstanceOutputTypesResource,
+    LastEntityOutputFilesResource,
+    LastInstanceOutputFilesResource,
     LastWorkingFilesResource,
     ModifiedFileResource,
-    CommentWorkingFileResource,
-    NewWorkingFileResource,
-    TaskWorkingFilesResource,
-    EntityWorkingFilesResource,
-    EntityOutputFilePathResource,
-    GetNextEntityOutputFileRevisionResource,
     NewEntityOutputFileResource,
-    LastEntityOutputFilesResource,
-    EntityOutputTypesResource,
-    EntityOutputTypeOutputFilesResource,
-    InstanceOutputFilePathResource,
     NewInstanceOutputFileResource,
-    GetNextInstanceOutputFileRevisionResource,
-    LastInstanceOutputFilesResource,
-    InstanceOutputTypesResource,
-    InstanceOutputTypeOutputFilesResource,
-    EntityOutputFilesResource,
+    NewWorkingFileResource,
     ProjectOutputFilesResource,
-    InstanceOutputFilesResource,
-    FileResource,
+    TaskWorkingFilesResource,
+    OutputFileFileResource,
     WorkingFileFileResource,
-    GuessFromPathResource,
+    WorkingFilePathResource,
 )
+from zou.app.utils.api import configure_api_from_blueprint
 
 routes = [
     ("/data/files/<file_id>", FileResource),
@@ -103,6 +104,10 @@ routes = [
     (
         "/data/working-files/<working_file_id>/file",
         WorkingFileFileResource,
+    ),
+    (
+        "/data/output-files/<output_file_id>/file",
+        OutputFileFileResource,
     ),
     (
         "/actions/working-files/<working_file_id>/comment",

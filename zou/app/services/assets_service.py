@@ -3,9 +3,9 @@ from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import aliased
 
 from zou.app import db
-from zou.app.utils import events, fields, cache
-from zou.app.utils import query as query_utils
-
+from zou.app.exceptions import (
+    AssetNotFoundException,
+)
 from zou.app.models.entity import (
     Entity,
     EntityLink,
@@ -13,20 +13,16 @@ from zou.app.models.entity import (
 from zou.app.models.entity_type import EntityType
 from zou.app.models.project import Project
 from zou.app.models.task import Task
-
 from zou.app.services import (
-    index_service,
-    projects_service,
     entities_service,
     entity_types_service,
-    persons_service,
-    subscriptions_service,
+    index_service,
     metadata_descriptors_service,
+    persons_service,
+    projects_service,
+    subscriptions_service,
 )
-
-from zou.app.exceptions import (
-    AssetNotFoundException,
-)
+from zou.app.utils import cache, events, fields, query as query_utils
 
 # Field orders of the compact encoding of the with-tasks views. Clients
 # must map values by reading these names from the response header, never
@@ -200,6 +196,7 @@ def prepare_assets_and_tasks(
     with_episode_ids=False,
     compact=False,
     only_user_projects=False,
+    for_client=None,
 ):
     """
     Run the with-tasks queries and return a generator yielding one asset
@@ -269,6 +266,7 @@ def prepare_assets_and_tasks(
         ASSETS_AND_TASKS_TASK_FIELDS,
         assigned_to=assigned_to,
         compact=compact,
+        for_client=for_client,
     )
 
     cast_in_episode_ids = {}
@@ -366,7 +364,10 @@ def prepare_assets_and_tasks(
 
 
 def get_assets_and_tasks(
-    criterions=None, with_episode_ids=False, only_user_projects=False
+    criterions=None,
+    with_episode_ids=False,
+    only_user_projects=False,
+    for_client=None,
 ):
     """
     Get all assets for given criterions with related tasks for each
@@ -377,6 +378,7 @@ def get_assets_and_tasks(
             criterions,
             with_episode_ids,
             only_user_projects=only_user_projects,
+            for_client=for_client,
         )
     )
 
@@ -467,7 +469,9 @@ def get_full_asset(asset_id):
     Return asset matching given id with additional information (project name,
     asset type name and tasks).
     """
-    assets = get_assets_and_tasks({"id": asset_id}, with_episode_ids=True)
+    assets = get_assets_and_tasks(
+        {"id": asset_id}, with_episode_ids=True, for_client=False
+    )
     if len(assets) == 0:
         raise AssetNotFoundException
 

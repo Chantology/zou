@@ -1,20 +1,21 @@
-from flasgger import swag_from
 from flask.views import MethodView
 from flask_jwt_extended import jwt_required
 
-from zou.app.mixin import ArgsMixin
-from zou.app.utils import fields, permissions
-
-from zou.app.services import events_service, permissions_service, user_service
 from zou.app.exceptions import (
     ProjectNotFoundException,
     WrongParameterException,
 )
+from zou.app.mixin import ArgsMixin
+from zou.app.services import events_service, permissions_service, user_service
+from zou.app.utils import fields, permissions
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class EventsResource(MethodView, ArgsMixin):
     @jwt_required()
-    @swag_from("openapi/EventsResource_get.yml")
+    @swag_from(SPECS["EventsResource_get"])
     def get(self):
         """
         Get events
@@ -97,7 +98,7 @@ class EventsResource(MethodView, ArgsMixin):
 
 class LoginLogsResource(MethodView, ArgsMixin):
     @jwt_required()
-    @swag_from("openapi/LoginLogsResource_get.yml")
+    @swag_from(SPECS["LoginLogsResource_get"])
     def get(self):
         """
         Get login logs
@@ -136,7 +137,7 @@ class LoginLogsResource(MethodView, ArgsMixin):
 
 class EventNamesResource(MethodView):
     @jwt_required()
-    @swag_from("openapi/EventNamesResource_get.yml")
+    @swag_from(SPECS["EventNamesResource_get"])
     def get(self):
         """
         Get event names

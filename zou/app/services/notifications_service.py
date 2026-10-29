@@ -1,18 +1,17 @@
 from sqlalchemy.sql import func
 
-from zou.app.models.project import ProjectPersonLink
+from zou.app.exceptions import PersonNotFoundException
 from zou.app.models.notification import Notification
-from zou.app.models.person import Person, DepartmentLink
+from zou.app.models.person import DepartmentLink, Person
+from zou.app.models.project import ProjectPersonLink
 from zou.app.models.task import Task
-
 from zou.app.services import (
     emails_service,
-    projects_service,
-    tasks_service,
     persons_service,
+    projects_service,
     subscriptions_service,
+    tasks_service,
 )
-from zou.app.exceptions import PersonNotFoundException
 from zou.app.utils import date_helpers, events, fields, query as query_utils
 
 
@@ -281,6 +280,7 @@ def notify_clients_playlist_ready(
     query = (
         Person.query.join(ProjectPersonLink)
         .filter(Person.is_bot == False)
+        .filter(Person.preview_project_id.is_(None))
         .filter(func.coalesce(ProjectPersonLink.role, Person.role) == "client")
         .filter(ProjectPersonLink.project_id == project_id)
     )

@@ -2,33 +2,34 @@ import base64
 import hashlib
 import hmac
 import json
-import pyotp
 import random
 import secrets
 import string
-
 from datetime import timedelta
 
-from flask import request, session, current_app
+import pyotp
+from babel.dates import format_datetime
+from fido2.utils import bytes2int, int2bytes
+from fido2.webauthn import (
+    AttestedCredentialData,
+    PublicKeyCredentialUserEntity,
+)
+from flask import current_app, request, session
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
     get_jti,
 )
-from babel.dates import format_datetime
+from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 
-
-from zou.app.services import (
-    persons_service,
-    templates_service,
-    organisation_service,
-)
-from zou.app.models.person import Person, SENSITIVE_FIELDS
+from zou.app import config
 from zou.app.exceptions import (
     EmailOTPAlreadyEnabledException,
     EmailOTPNotEnabledException,
     FIDONoPreregistrationException,
     FIDOServerException,
+    InactiveUserException,
     MissingOTPException,
     NoAuthStrategyConfigured,
     PersonNotFoundException,
@@ -36,24 +37,21 @@ from zou.app.exceptions import (
     TOTPAlreadyEnabledException,
     TOTPNotEnabledException,
     TwoFactorAuthenticationNotEnabledException,
-    InactiveUserException,
     UserCantConnectDueToNoFallback,
     WrongOTPException,
     WrongPasswordException,
     WrongUserException,
 )
-from zou.app import config
+from zou.app.models.person import SENSITIVE_FIELDS, Person
+from zou.app.services import (
+    organisation_service,
+    persons_service,
+    preview_accounts_service,
+    templates_service,
+)
 from zou.app.stores import auth_tokens_store
 from zou.app.utils import auth, date_helpers, emails
 from zou.app.utils.email_i18n import get_email_translation
-
-from fido2.webauthn import (
-    PublicKeyCredentialUserEntity,
-)
-from sqlalchemy.orm.attributes import flag_modified
-
-from fido2.utils import bytes2int, int2bytes
-from fido2.webauthn import AttestedCredentialData
 
 MAX_LOGIN_FAILED_ATTEMPS = 5
 LOGIN_LOCKOUT_DELAY = timedelta(minutes=1)
@@ -138,16 +136,19 @@ def check_auth(
         else:
             raise NoAuthStrategyConfigured()
     except WrongPasswordException:
-        update_login_failed_attempts(
-            person["id"],
-            login_failed_attemps + 1,
-            date_helpers.get_utc_now_datetime(),
-        )
+        add_login_failed_attempt(person["id"])
         raise WrongPasswordException()
 
     # Past the password, and before the second factor: a deactivated
     # account does not hand out the list of its enabled 2FA methods.
     if not person.get("active", False):
+        raise InactiveUserException()
+    if person.get("preview_project_id") is not None and not (
+        preview_accounts_service.is_available()
+        and preview_accounts_service.is_preview_session_valid(
+            persons_service.get_person_raw(person["id"]), None
+        )
+    ):
         raise InactiveUserException()
 
     if not no_otp and person_two_factor_authentication_enabled(person):
@@ -158,11 +159,7 @@ def check_auth(
             fido_authentication_response,
             recovery_code,
         ):
-            update_login_failed_attempts(
-                person["id"],
-                login_failed_attemps + 1,
-                date_helpers.get_utc_now_datetime(),
-            )
+            add_login_failed_attempt(person["id"])
             raise WrongOTPException()
 
     if login_failed_attemps > 0:
@@ -226,10 +223,10 @@ def ldap_auth_strategy(person, password, app):
     (only if fallback is activated (via LDAP_FALLBACK flag) in configuration)
     """
     if person["is_generated_from_ldap"]:
-        from ldap3 import Server, Connection, ALL, NTLM, SIMPLE
+        from ldap3 import ALL, NTLM, SIMPLE, Connection, Server
         from ldap3.core.exceptions import (
-            LDAPSocketOpenError,
             LDAPInvalidCredentialsResult,
+            LDAPSocketOpenError,
         )
 
         try:
@@ -282,7 +279,7 @@ def update_login_failed_attempts(
     person_id, login_failed_attemps, last_login_failed=None
 ):
     """
-    Update login failed attempts for a person_id.
+    Set the failed login counter of a person_id to given count.
 
     The person cache is deliberately left alone: check_login_failed_attempts
     reads the counter from the row, so nothing needs the cached copy to be
@@ -290,13 +287,42 @@ def update_login_failed_attempts(
     the whole instance. Calling it here let an anonymous caller keep that
     cache cold with a handful of wrong passwords a minute, while the JWT
     loader reads it on every authenticated request.
+
+    updated_at keeps its value too: Kitsu versions the avatar URL with it.
     """
-    person = Person.get(person_id)
-    person.login_failed_attemps = login_failed_attemps
+    values = {
+        "login_failed_attemps": login_failed_attemps,
+        # Set to itself, updated_at keeps its value instead of taking the
+        # onupdate default.
+        "updated_at": Person.updated_at,
+    }
     if last_login_failed is not None:
-        person.last_login_failed = last_login_failed
-    person.commit()
-    return person.serialize()
+        values["last_login_failed"] = last_login_failed
+    Person.query.filter(Person.id == person_id).update(
+        values, synchronize_session=False
+    )
+    Person.commit()
+
+
+def add_login_failed_attempt(person_id):
+    """
+    Count one more failed login for a person_id, dated now. The database
+    adds it to the stored count, so failures running in parallel all
+    count. The person cache and updated_at stay as they are, as in
+    update_login_failed_attempts.
+    """
+    Person.query.filter(Person.id == person_id).update(
+        {
+            "login_failed_attemps": func.coalesce(
+                Person.login_failed_attemps, 0
+            )
+            + 1,
+            "last_login_failed": date_helpers.get_utc_now_datetime(),
+            "updated_at": Person.updated_at,
+        },
+        synchronize_session=False,
+    )
+    Person.commit()
 
 
 def check_two_factor_authentication(
@@ -372,6 +398,8 @@ def is_user_exempt_from_2fa(person, app):
     """
     Check if user is exempt from mandatory 2FA requirement.
     """
+    if person.get("preview_project_id") is not None:
+        return True
     exempt_users = app.config.get("TWO_FA_EXEMPT_USERS", [])
     return person.get("email", "") in exempt_users
 
@@ -707,9 +735,10 @@ def unregister_fido(person_id, device_name):
             del person.fido_credentials[i]
             break
     flag_modified(person, "fido_credentials")
+    # The keys left keep FIDO on, and the preferred method with it.
     if len(person.fido_credentials) == 0:
         person.fido_enabled = False
-    _disable_two_factor_method(person, "fido")
+        _disable_two_factor_method(person, "fido")
     person.commit()
     persons_service.clear_person_cache()
     return True
@@ -906,7 +935,13 @@ def check_login_failed_attempts(person):
     meant dropping the whole instance person cache on every wrong
     password. See update_login_failed_attempts.
     """
-    row = Person.get(person["id"])
+    row = (
+        Person.query.with_entities(
+            Person.login_failed_attemps, Person.last_login_failed
+        )
+        .filter(Person.id == person["id"])
+        .one()
+    )
     login_failed_attemps = row.login_failed_attemps or 0
     if login_failed_attemps < MAX_LOGIN_FAILED_ATTEMPS:
         return login_failed_attemps

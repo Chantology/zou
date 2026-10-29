@@ -1,11 +1,16 @@
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from sqlalchemy_utils import UUIDType
+from sqlalchemy_utils import ChoiceType, UUIDType
 
 from zou.app import db
-from zou.app.models.serializer import SerializerMixin
 from zou.app.models.base import BaseMixin
+from zou.app.models.serializer import SerializerMixin
 
-from sqlalchemy.dialects.postgresql import JSONB
+QUALITIES = [
+    ("low", "Low"),
+    ("mid", "Mid"),
+    ("high", "High"),
+]
 
 
 class OutputFile(db.Model, BaseMixin, SerializerMixin):
@@ -19,7 +24,7 @@ class OutputFile(db.Model, BaseMixin, SerializerMixin):
 
     name = db.Column(db.String(250), nullable=False)
     canceled = db.Column(db.Boolean(), default=False, nullable=False)
-    size = db.Column(db.Integer())
+    size = db.Column(db.BigInteger())
     checksum = db.Column(db.String(32))
     description = db.Column(db.Text())
     comment = db.Column(db.Text())
@@ -30,6 +35,10 @@ class OutputFile(db.Model, BaseMixin, SerializerMixin):
     source = db.Column(db.String(40))
     path = db.Column(db.String(400))
     data = db.Column(JSONB)
+    # The date of the last upload of the content: None when the file store
+    # has no content for this file.
+    uploaded_at = db.Column(db.DateTime())
+    quality = db.Column(ChoiceType(QUALITIES), nullable=True)
 
     file_status_id = db.Column(
         UUIDType(binary=False),

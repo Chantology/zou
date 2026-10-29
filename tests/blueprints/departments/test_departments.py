@@ -1,5 +1,4 @@
 from tests.base import ApiDBTestCase
-
 from zou.app.models.hardware_item import HardwareItem
 from zou.app.services import departments_service, persons_service
 
@@ -99,6 +98,18 @@ class DepartmentRoutesTestCase(ApiDBTestCase):
         )
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["name"], "Wacom Tablet")
+
+    def test_get_department_hardware_item(self):
+        path = (
+            f"/data/departments/{self.department.id}"
+            f"/hardware-items/{self.hardware_item.id}"
+        )
+        self.get(path, 404)
+        departments_service.add_hardware_item_to_department(
+            str(self.department.id), str(self.hardware_item.id)
+        )
+        result = self.get(path)
+        self.assertEqual(result["id"], str(self.hardware_item.id))
 
     def test_delete_hardware_item_from_department(self):
         departments_service.add_hardware_item_to_department(

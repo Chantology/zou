@@ -1,12 +1,11 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
 
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
+from zou.app.exceptions import WrongParameterException
 from zou.app.models.production_schedule_version import (
     ProductionScheduleVersion,
     ProductionScheduleVersionTaskLink,
 )
-
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
 from zou.app.services import (
     permissions_service,
     schedule_service,
@@ -14,7 +13,9 @@ from zou.app.services import (
     user_service,
 )
 from zou.app.utils import fields, permissions
-from zou.app.exceptions import WrongParameterException
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi/production_schedule_version.yml")
 
 
 class ProductionScheduleVersionsResource(BaseModelsResource):
@@ -33,7 +34,7 @@ class ProductionScheduleVersionsResource(BaseModelsResource):
             raise permissions.PermissionDenied
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionsResource_get.yml")
+    @swag_from(SPECS["ProductionScheduleVersionsResource_get"])
     def get(self):
         """
         Get production schedule versions
@@ -41,7 +42,7 @@ class ProductionScheduleVersionsResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionsResource_post.yml")
+    @swag_from(SPECS["ProductionScheduleVersionsResource_post"])
     def post(self):
         """
         Create production schedule version
@@ -67,7 +68,7 @@ class ProductionScheduleVersionResource(BaseModelResource):
             raise permissions.PermissionDenied
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionResource_get.yml")
+    @swag_from(SPECS["ProductionScheduleVersionResource_get"])
     def get(self, instance_id):
         """
         Get production schedule version
@@ -75,7 +76,7 @@ class ProductionScheduleVersionResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionResource_put.yml")
+    @swag_from(SPECS["ProductionScheduleVersionResource_put"])
     def put(self, instance_id):
         """
         Update production schedule version
@@ -83,7 +84,7 @@ class ProductionScheduleVersionResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionResource_delete.yml")
+    @swag_from(SPECS["ProductionScheduleVersionResource_delete"])
     def delete(self, instance_id):
         """
         Delete production schedule version
@@ -156,7 +157,7 @@ class ProductionScheduleVersionTaskLinksResource(BaseModelsResource):
         return query
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionTaskLinksResource_get.yml")
+    @swag_from(SPECS["ProductionScheduleVersionTaskLinksResource_get"])
     def get(self):
         """
         Get production schedule version task links
@@ -164,7 +165,7 @@ class ProductionScheduleVersionTaskLinksResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionTaskLinksResource_post.yml")
+    @swag_from(SPECS["ProductionScheduleVersionTaskLinksResource_post"])
     def post(self):
         """
         Create production schedule version task link
@@ -210,7 +211,7 @@ class ProductionScheduleVersionTaskLinkResource(BaseModelResource):
             raise permissions.PermissionDenied
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionTaskLinkResource_get.yml")
+    @swag_from(SPECS["ProductionScheduleVersionTaskLinkResource_get"])
     def get(self, instance_id):
         """
         Get production schedule version task link
@@ -218,7 +219,7 @@ class ProductionScheduleVersionTaskLinkResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionTaskLinkResource_put.yml")
+    @swag_from(SPECS["ProductionScheduleVersionTaskLinkResource_put"])
     def put(self, instance_id):
         """
         Update production schedule version task link
@@ -226,7 +227,7 @@ class ProductionScheduleVersionTaskLinkResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/ProductionScheduleVersionTaskLinkResource_delete.yml")
+    @swag_from(SPECS["ProductionScheduleVersionTaskLinkResource_delete"])
     def delete(self, instance_id):
         """
         Delete production schedule version task link

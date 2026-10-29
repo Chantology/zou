@@ -1,16 +1,14 @@
 import platform
+
 import requests
 
 from zou import __version__
-
-from zou.app.models.person import Person
-
-from zou.app.services import (
-    stats_service,
-    organisation_service,
-)
-
 from zou.app import config
+from zou.app.models.person import Person
+from zou.app.services import (
+    organisation_service,
+    stats_service,
+)
 
 
 def send_main_infos():
@@ -22,7 +20,9 @@ def send_main_infos():
     organisation = organisation_service.get_organisation()
     stats = stats_service.get_main_stats()
     nb_active_users = Person.query.filter(
-        Person.active, Person.is_guest.isnot(True)
+        Person.active,
+        Person.is_guest.isnot(True),
+        Person.preview_project_id.is_(None),
     ).count()
 
     data = {

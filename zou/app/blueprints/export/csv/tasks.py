@@ -1,17 +1,18 @@
-from flasgger import swag_from
-from zou.app.blueprints.export.csv.base import BaseCsvExport
 from flask_jwt_extended import jwt_required
 from sqlalchemy.orm import aliased, selectinload
 
-from zou.app.models.task_status import TaskStatus
-from zou.app.models.task_type import TaskType
-from zou.app.models.task import Task
-from zou.app.models.person import Person
-from zou.app.models.project import Project
+from zou.app.blueprints.export.csv.base import BaseCsvExport
 from zou.app.models.entity import Entity
 from zou.app.models.entity_type import EntityType
-
+from zou.app.models.person import Person
+from zou.app.models.project import Project
+from zou.app.models.task import Task
+from zou.app.models.task_status import TaskStatus
+from zou.app.models.task_type import TaskType
 from zou.app.services import projects_service
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class TasksCsvExport(BaseCsvExport):
@@ -21,7 +22,7 @@ class TasksCsvExport(BaseCsvExport):
         self.file_name = "tasks_export"
 
     @jwt_required()
-    @swag_from("openapi/TasksCsvExport_get.yml")
+    @swag_from(SPECS["TasksCsvExport_get"])
     def get(self):
         """
         Export tasks csv

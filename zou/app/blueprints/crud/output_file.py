@@ -1,14 +1,11 @@
-from flasgger import swag_from
 from flask import current_app
-
+from flask_jwt_extended import jwt_required
 from sqlalchemy.exc import StatementError
 
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.exceptions import WrongParameterException
-from flask_jwt_extended import jwt_required
-
-from zou.app.utils import events
-from zou.app.models.output_file import OutputFile
 from zou.app.models.entity import Entity
+from zou.app.models.output_file import QUALITIES, OutputFile
 from zou.app.models.project import Project
 from zou.app.services import (
     entities_service,
@@ -16,18 +13,38 @@ from zou.app.services import (
     permissions_service,
     user_service,
 )
-from zou.app.utils import permissions
+from zou.app.utils import events, permissions
+from zou.app.utils.openapi import load_specs, swag_from
 
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
+SPECS = load_specs(__file__, "openapi/output_file.yml")
+
+
+def check_quality(data):
+    if data.get("quality") is not None and data["quality"] not in [
+        quality for quality, _ in QUALITIES
+    ]:
+        raise WrongParameterException("Invalid quality")
 
 
 class OutputFilesResource(BaseModelsResource):
     def __init__(self):
         BaseModelsResource.__init__(self, OutputFile)
 
+    @jwt_required()
+    @swag_from(SPECS["OutputFilesResource_get"])
+    def get(self):
+        """
+        Get output files
+        """
+        return super().get()
+
     def check_read_permissions(self, options=None):
-        permissions_service.block_access_to_vendor()
         return True
+
+    def update_data(self, data):
+        data = super().update_data(data)
+        check_quality(data)
+        return data
 
     def add_project_permission_filter(self, query):
         if permissions.has_admin_permissions():
@@ -38,6 +55,14 @@ class OutputFilesResource(BaseModelsResource):
                 .join(Project)
                 .filter(user_service.build_related_projects_filter())
             )
+            # A vendor reads no output file, on the projects they are one.
+            vendor_project_ids = user_service.get_project_ids_with_roles(
+                "vendor"
+            )
+            if vendor_project_ids:
+                query = query.filter(
+                    Entity.project_id.not_in(vendor_project_ids)
+                )
             return query
 
     def emit_create_event(self, instance_dict):
@@ -71,7 +96,7 @@ class OutputFileResource(BaseModelResource):
             )
 
     @jwt_required()
-    @swag_from("openapi/OutputFileResource_get.yml")
+    @swag_from(SPECS["OutputFileResource_get"])
     def get(self, instance_id):
         """
         Get output file
@@ -87,6 +112,27 @@ class OutputFileResource(BaseModelResource):
 
         except ValueError:
             raise WrongParameterException("Invalid value.")
+
+    @jwt_required()
+    @swag_from(SPECS["OutputFileResource_put"])
+    def put(self, instance_id):
+        """
+        Update output file
+        """
+        return super().put(instance_id)
+
+    @jwt_required()
+    @swag_from(SPECS["OutputFileResource_delete"])
+    def delete(self, instance_id):
+        """
+        Delete output file
+        """
+        return super().delete(instance_id)
+
+    def update_data(self, data, instance_id):
+        data = super().update_data(data, instance_id)
+        check_quality(data)
+        return data
 
     def post_update(self, instance_dict, data):
         files_service.clear_output_file_cache(instance_dict["id"])

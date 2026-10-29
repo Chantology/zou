@@ -1,18 +1,18 @@
 import os
 
 from tests.base import ApiDBTestCase
-
 from zou.app.models.attachment_file import AttachmentFile
 from zou.app.models.comment import Comment
 from zou.app.models.notification import Notification
 from zou.app.models.person import Person
-from zou.app.models.project import Project
+from zou.app.models.project import Project, ProjectTaskStatusLink
 from zou.app.models.task import Task
+from zou.app.models.task_status import TaskStatus
 from zou.app.services import (
     comments_service,
     projects_service,
-    tasks_service,
     task_types_service,
+    tasks_service,
 )
 
 
@@ -292,6 +292,31 @@ class CommentRoutesTestCase(CommentTestCase):
         reply_ids = [r["id"] for r in comment.get("replies", [])]
         self.assertNotIn(reply_id, reply_ids)
 
+    def test_ack_and_reply_deletion_take_the_comment_task(self):
+        other_task = self._make_sibling_task()
+        reply = comments_service.reply_comment(
+            self.comment["id"], "Reply", person_id=str(self.user["id"])
+        )
+        wrong = f"/data/tasks/{other_task.id}/comments/{self.comment['id']}"
+        self.post(f"{wrong}/ack", {}, 404)
+        self.delete(f"{wrong}/reply/{reply['id']}", 404)
+
+    def test_an_author_out_of_the_team_replies_no_more(self):
+        self.generate_fixture_user_cg_artist()
+        comment = comments_service.new_comment(
+            self.task.id,
+            self.task_status.id,
+            self.user_cg_artist["id"],
+            "mine",
+        )
+        path = f"/data/tasks/{self.task.id}/comments/{comment['id']}/reply"
+        self.log_in_cg_artist()
+        self.post(path, {"text": "Still here"}, 403)
+        projects_service.add_team_member(
+            self.project.id, self.user_cg_artist["id"]
+        )
+        self.post(path, {"text": "Still here"}, 200)
+
 
 class ClientVisibleCommentTestCase(CommentTestCase):
     """
@@ -305,6 +330,55 @@ class ClientVisibleCommentTestCase(CommentTestCase):
         self.project.team = [client_person, self.person]
         self.project.save()
         return client_person
+
+    def a_status_overridden_for_the_production(self, studio, production):
+        """
+        A status the studio sets to given client permission, overridden by
+        the production link.
+        """
+        task_status = TaskStatus.create(
+            name=f"Status {studio} {production}",
+            short_name=f"s{studio:d}{production}",
+            color="#000000",
+            is_client_allowed=studio,
+        )
+        ProjectTaskStatusLink.create(
+            project_id=self.project.id,
+            task_status_id=task_status.id,
+            is_client_allowed=production,
+        )
+        return str(task_status.id)
+
+    def client_comments_with(self, task_status_id, code=201):
+        return self.post(
+            f"/actions/tasks/{self.task.id}/comment",
+            {"task_status_id": task_status_id, "comment": "Client note"},
+            code,
+        )
+
+    def test_production_forbids_a_status_the_studio_allows(self):
+        self.put_the_client_in_the_team()
+        task_status_id = self.a_status_overridden_for_the_production(
+            True, False
+        )
+        self.log_in_client()
+        self.client_comments_with(task_status_id, 403)
+
+    def test_production_allows_a_status_the_studio_forbids(self):
+        self.put_the_client_in_the_team()
+        task_status_id = self.a_status_overridden_for_the_production(
+            False, True
+        )
+        self.log_in_client()
+        self.client_comments_with(task_status_id)
+
+    def test_no_override_falls_back_to_the_studio_value(self):
+        self.put_the_client_in_the_team()
+        forbidden = self.a_status_overridden_for_the_production(False, None)
+        allowed = self.a_status_overridden_for_the_production(True, None)
+        self.log_in_client()
+        self.client_comments_with(forbidden, 403)
+        self.client_comments_with(allowed)
 
     def comment_for_client(self, text="Visible to client", for_client=True):
         return self.post(
@@ -751,6 +825,18 @@ class CommentAttachmentTestCase(CommentTestCase):
             f"/comments/{self.comment['id']}/add-attachment",
             self.get_fixture_file_path(os.path.join("thumbnails", "th01.png")),
         )[0]
+
+    def test_an_internal_attachment_stays_out_of_the_client_reach(self):
+        attachment = self.attach_a_file()
+        projects_service.add_team_member(
+            self.project.id, self.user_client["id"]
+        )
+        self.log_in_client()
+        path = f"/data/attachment-files/{attachment['id']}"
+        self.get(path, 403)
+        Comment.get(self.comment["id"]).update({"for_client": True})
+        comments_service.clear_comment_cache(self.comment["id"])
+        self.get(path, 200)
 
     def test_get_project_attachment_files(self):
         path = f"/data/projects/{self.project.id}/attachment-files"

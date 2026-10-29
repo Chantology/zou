@@ -1,13 +1,13 @@
 import time
-
 from unittest import mock
 
 from authlib.oidc.core import CodeIDToken
-from flask_jwt_extended import create_access_token as real_create_access_token
-from flask_jwt_extended import decode_token
+from flask_jwt_extended import (
+    create_access_token as real_create_access_token,
+    decode_token,
+)
 
 from tests.base import ApiDBTestCase
-
 from zou.app import config
 from zou.app.models.person import Person
 from zou.app.services import auth_service, persons_service
@@ -28,8 +28,8 @@ class OIDCClaimMappingTestCase(ApiDBTestCase):
     def test_get_email_overridden_claim(self):
         with mock.patch.object(config, "OIDC_EMAIL_CLAIM", "mail"):
             self.assertEqual(
-                oidc.get_email_from_claims({"mail": "jane@corp.com"}),
-                "jane@corp.com",
+                oidc.get_email_from_claims({"mail": "jane@example.com"}),
+                "jane@example.com",
             )
 
     def test_map_claims_default_claims(self):

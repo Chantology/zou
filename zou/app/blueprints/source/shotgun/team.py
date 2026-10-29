@@ -1,17 +1,17 @@
-from flasgger import swag_from
 from flask import current_app
 from flask_jwt_extended import jwt_required
 
 from zou.app import db
-from zou.app.models.project import Project
-from zou.app.models.project import ProjectPersonLink
-from zou.app.models.person import Person
-from zou.app.services import projects_service
-
 from zou.app.blueprints.source.shotgun.base import (
     BaseImportShotgunResource,
     ImportRemoveShotgunBaseResource,
 )
+from zou.app.models.person import Person
+from zou.app.models.project import Project, ProjectPersonLink
+from zou.app.services import projects_service
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class ImportShotgunProjectConnectionsResource(BaseImportShotgunResource):
@@ -19,7 +19,7 @@ class ImportShotgunProjectConnectionsResource(BaseImportShotgunResource):
         BaseImportShotgunResource.__init__(self)
 
     @jwt_required()
-    @swag_from("openapi/ImportShotgunProjectConnectionsResource_post.yml")
+    @swag_from(SPECS["ImportShotgunProjectConnectionsResource_post"])
     def post(self):
         """
         Import shotgun project connections
@@ -97,7 +97,7 @@ class ImportRemoveShotgunProjectConnectionResource(
         return True
 
     @jwt_required()
-    @swag_from("openapi/ImportRemoveShotgunProjectConnectionResource_post.yml")
+    @swag_from(SPECS["ImportRemoveShotgunProjectConnectionResource_post"])
     def post(self):
         """
         Remove shotgun project connection

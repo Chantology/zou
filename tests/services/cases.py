@@ -4,17 +4,18 @@ fixtures its tests need and holds no test of its own.
 """
 
 import io
-from sqlalchemy import event
-from tests.base import ApiDBTestCase
 from contextlib import contextmanager
+
 from flask import g
 from flask_jwt_extended import verify_jwt_in_request
+from sqlalchemy import event
 from werkzeug.datastructures import FileStorage
 
-from zou.app import db, app
-from zou.app.services import comments_service, auth_service
-from zou.app.models.person import Person
+from tests.base import ApiDBTestCase
+from zou.app import app, db
 from zou.app.models.notification import Notification
+from zou.app.models.person import Person
+from zou.app.services import auth_service, comments_service
 from zou.app.utils import auth
 
 
@@ -195,7 +196,7 @@ class NotificationsTestCase(ApiDBTestCase):
         self.assignee_id = str(self.person.id)
         self.outsider_id = str(
             self.generate_fixture_person(
-                first_name="Jane", email="jane.doe@gmail.com"
+                first_name="Jane", email="jane.doe@example.com"
             ).id
         )
         self.admin_id = self.user["id"]
@@ -317,7 +318,7 @@ class CommentsTestCase(ApiDBTestCase):
         self.task = self.generate_fixture_shot_task()
         self.person_id = str(self.person.id)
         self.person_dict = self.generate_fixture_person(
-            first_name="Jane", email="jane.doe@gmail.com"
+            first_name="Jane", email="jane.doe@example.com"
         ).serialize()
         self.wfa_status = self.generate_fixture_task_status_wfa()
         self.project_id = str(self.project.id)

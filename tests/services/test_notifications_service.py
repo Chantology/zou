@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-
+from tests.services.cases import NotificationsTestCase
 from zou.app.models.notification import Notification
 from zou.app.models.person import Person
 from zou.app.services import (
@@ -9,7 +9,6 @@ from zou.app.services import (
     projects_service,
     subscriptions_service,
 )
-from tests.services.cases import NotificationsTestCase
 
 
 class NotificationRecipientTestCase(NotificationsTestCase):
@@ -363,7 +362,7 @@ class PlaylistNotificationTestCase(NotificationsTestCase):
         elsewhere = Person.create(
             first_name="Other",
             last_name="Client",
-            email="other.client@gmail.com",
+            email="other.client@example.com",
             role="client",
         )
         projects_service.add_team_member(
@@ -373,7 +372,7 @@ class PlaylistNotificationTestCase(NotificationsTestCase):
         bot = Person.create(
             first_name="Bot",
             last_name="Client",
-            email="bot.client@gmail.com",
+            email="bot.client@example.com",
             role="client",
             is_bot=True,
         )
@@ -402,7 +401,7 @@ class PlaylistNotificationTestCase(NotificationsTestCase):
         other_client = Person.create(
             first_name="Studio",
             last_name="Client",
-            email="studio.client@gmail.com",
+            email="studio.client@example.com",
             role="client",
             studio_id=studio.id,
         )
@@ -424,7 +423,7 @@ class PlaylistNotificationTestCase(NotificationsTestCase):
         other_client = Person.create(
             first_name="Loose",
             last_name="Client",
-            email="loose.client@gmail.com",
+            email="loose.client@example.com",
             role="client",
         )
         projects_service.add_team_member(

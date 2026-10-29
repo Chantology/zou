@@ -1,24 +1,24 @@
-from flasgger import swag_from
 from zou.app.blueprints.source.csv.base import (
     BaseCsvImportResource,
     RowException,
 )
-
 from zou.app.models.person import (
-    ROLE_TYPES,
     CONTRACT_TYPES,
     POSITION_TYPES,
+    ROLE_TYPES,
     SENIORITY_TYPES,
     normalize_country,
 )
 from zou.app.services import persons_service
-from zou.app.utils import permissions
-
+from zou.app.utils import auth, permissions
+from zou.app.utils.openapi import load_specs, swag_from
 from zou.app.utils.string import strtobool
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class PersonsCsvImportResource(BaseCsvImportResource):
-    @swag_from("openapi/PersonsCsvImportResource_post.yml")
+    @swag_from(SPECS["PersonsCsvImportResource_post"])
     def post(self):
         """
         Import persons csv
@@ -45,7 +45,7 @@ class PersonsCsvImportResource(BaseCsvImportResource):
     def import_row(self, row):
         first_name = row["First Name"]
         last_name = row["Last Name"]
-        email = row["Email"]
+        email = (row["Email"] or "").strip()
         phone = row.get("Phone", None)
         role = row.get("Role", None)
         contract_type = row.get("Contract Type", None)
@@ -56,6 +56,14 @@ class PersonsCsvImportResource(BaseCsvImportResource):
         studio_name = row.get("Studio", None)
         departments_value = row.get("Departments", None)
         active = row.get("Active", None)
+
+        # The person routes refuse an email like "jdoe", which breaks the
+        # people search of Kitsu. No deliverability check: it would cost a
+        # DNS query per row.
+        try:
+            email = auth.validate_email(email, check_deliverability=False)
+        except auth.EmailNotValidException as e:
+            raise ValueError(f"Email: {email} ({e})")
 
         data = {"first_name": first_name, "last_name": last_name}
         if role:

@@ -1,25 +1,25 @@
-from flasgger import swag_from
 from flask.views import MethodView
 from flask_jwt_extended import jwt_required
 from slugify import slugify
 from sqlalchemy.orm import aliased
 
+from zou.app.mixin import ArgsMixin
 from zou.app.models.entity import Entity, EntityLink
 from zou.app.models.entity_type import EntityType
-
 from zou.app.services import (
+    entity_types_service,
     permissions_service,
     projects_service,
-    entity_types_service,
 )
 from zou.app.utils import csv_utils
+from zou.app.utils.openapi import load_specs, swag_from
 
-from zou.app.mixin import ArgsMixin
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class CastingCsvExport(MethodView, ArgsMixin):
     @jwt_required()
-    @swag_from("openapi/CastingCsvExport_get.yml")
+    @swag_from(SPECS["CastingCsvExport_get"])
     def get(self, project_id):
         """
         Export casting csv

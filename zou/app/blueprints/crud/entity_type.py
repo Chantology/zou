@@ -1,15 +1,16 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
+from sqlalchemy import func
 
 from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
-
+from zou.app.exceptions import WrongParameterException
 from zou.app.models.entity_type import EntityType
-from zou.app.utils import events
 from zou.app.services import (
     entity_types_service,
 )
+from zou.app.utils import events
+from zou.app.utils.openapi import load_specs, swag_from
 
-from zou.app.exceptions import WrongParameterException
+SPECS = load_specs(__file__, "openapi/entity_type.yml")
 
 
 class EntityTypesResource(BaseModelsResource):
@@ -17,7 +18,7 @@ class EntityTypesResource(BaseModelsResource):
         BaseModelsResource.__init__(self, EntityType)
 
     @jwt_required()
-    @swag_from("openapi/EntityTypesResource_get.yml")
+    @swag_from(SPECS["EntityTypesResource_get"])
     def get(self):
         """
         Get entity types
@@ -25,7 +26,7 @@ class EntityTypesResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/EntityTypesResource_post.yml")
+    @swag_from(SPECS["EntityTypesResource_post"])
     def post(self):
         """
         Create entity type
@@ -53,7 +54,7 @@ class EntityTypesResource(BaseModelsResource):
 
     def check_creation_integrity(self, data):
         entity_type = EntityType.query.filter(
-            EntityType.name.ilike(data.get("name", ""))
+            func.lower(EntityType.name) == str(data.get("name", "")).lower()
         ).first()
         if entity_type is not None:
             raise WrongParameterException(
@@ -70,7 +71,7 @@ class EntityTypeResource(BaseModelResource):
         return True
 
     @jwt_required()
-    @swag_from("openapi/EntityTypeResource_get.yml")
+    @swag_from(SPECS["EntityTypeResource_get"])
     def get(self, instance_id):
         """
         Get entity type
@@ -78,7 +79,7 @@ class EntityTypeResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/EntityTypeResource_put.yml")
+    @swag_from(SPECS["EntityTypeResource_put"])
     def put(self, instance_id):
         """
         Update entity type
@@ -86,7 +87,7 @@ class EntityTypeResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/EntityTypeResource_delete.yml")
+    @swag_from(SPECS["EntityTypeResource_delete"])
     def delete(self, instance_id):
         """
         Delete entity type

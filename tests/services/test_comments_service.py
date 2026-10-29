@@ -1,35 +1,31 @@
 import os
-
+import tempfile
+from unittest import mock
 from unittest.mock import patch
 
-
+from tests.services.cases import (
+    CommentsTestCase,
+    PreviewFileTestCase,
+    TaskTestCase,
+)
 from zou.app.models.attachment_file import AttachmentFile
 from zou.app.models.comment import Comment
 from zou.app.models.news import News
 from zou.app.models.notification import Notification
 from zou.app.models.person import Person
-
 from zou.app.services import (
+    attachment_files_service,
     comments_service,
     concepts_service,
     entities_service,
     exception,
     persons_service,
+    preview_file_states_service as states_service,
+    preview_files_service,
     tasks_service,
-    attachment_files_service,
 )
+from zou.app.stores import file_store, redis_lock
 from zou.app.utils import date_helpers, fields
-from unittest import mock
-from zou.app.services import preview_files_service
-from zou.app.services import preview_file_states_service as states_service
-from zou.app.stores import file_store
-from zou.app.stores import redis_lock
-import tempfile
-from tests.services.cases import (
-    TaskTestCase,
-    PreviewFileTestCase,
-    CommentsTestCase,
-)
 
 
 class NewCommentTestCase(CommentsTestCase):
@@ -510,7 +506,7 @@ class MentionTestCase(CommentsTestCase):
         production must not be pulled into its comments.
         """
         outsider = self.generate_fixture_person(
-            first_name="Alan", last_name="Smithee", email="alan@gmail.com"
+            first_name="Alan", last_name="Smithee", email="alan@example.com"
         )
         self.assertEqual(
             comments_service.get_comment_mentions(

@@ -1,17 +1,18 @@
-from flasgger import swag_from
 from flask.views import MethodView
-
 from flask_jwt_extended import jwt_required
 
+from zou.app.blueprints.search.schemas import SearchSchema
 from zou.app.mixin import ArgsMixin
-from zou.app.utils import permissions, validation
 from zou.app.services import (
     index_service,
     permissions_service,
     projects_service,
     user_service,
 )
-from zou.app.blueprints.search.schemas import SearchSchema
+from zou.app.utils import permissions, validation
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class SearchResource(MethodView, ArgsMixin):
@@ -29,7 +30,7 @@ class SearchResource(MethodView, ArgsMixin):
         )
 
     @jwt_required()
-    @swag_from("openapi/SearchResource_post.yml")
+    @swag_from(SPECS["SearchResource_post"])
     def post(self):
         """
         Search entities
@@ -56,12 +57,17 @@ class SearchResource(MethodView, ArgsMixin):
                 project_ids = []
 
         if "persons" in index_names:
-            results["persons"] = index_service.search_persons(
-                query,
-                limit=limit,
-                offset=offset,
-                minimal=not permissions.has_admin_permissions(),
-            )
+            if permissions.has_client_permissions():
+                # The index cannot be narrowed to the teams a client meets,
+                # and their context already holds those people.
+                results["persons"] = []
+            else:
+                results["persons"] = index_service.search_persons(
+                    query,
+                    limit=limit,
+                    offset=offset,
+                    minimal=not permissions.has_admin_permissions(),
+                )
         if "assets" in index_names:
             if (
                 len(project_ids) == 0

@@ -1,23 +1,25 @@
-from flasgger import swag_from
-from flask.views import MethodView
 from flask import request
+from flask.views import MethodView
 from flask_jwt_extended import jwt_required
 from slugify import slugify
 
 from zou.app.services import (
-    shots_service,
-    projects_service,
+    metadata_descriptors_service,
     permissions_service,
     persons_service,
+    projects_service,
+    shots_service,
     task_types_service,
-    metadata_descriptors_service,
 )
 from zou.app.utils import csv_utils, query
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class ShotsCsvExport(MethodView):
     @jwt_required()
-    @swag_from("openapi/ShotsCsvExport_get.yml")
+    @swag_from(SPECS["ShotsCsvExport_get"])
     def get(self, project_id):
         """
         Export shots csv

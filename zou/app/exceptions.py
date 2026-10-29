@@ -15,11 +15,11 @@ So a new exception inheriting Exception is a 500 until a route handles it.
 """
 
 from werkzeug.exceptions import (
-    NotFound,
-    Forbidden,
     BadRequest,
-    Unauthorized,
+    Forbidden,
+    NotFound,
     ServiceUnavailable,
+    Unauthorized,
 )
 
 
@@ -343,6 +343,14 @@ class WrongDateFormatException(Exception):
 
 
 class EntryAlreadyExistsException(Exception):
+    pass
+
+
+class PreviewAccountsUnavailableException(BadRequest):
+    pass
+
+
+class PreviewAccountNotFoundException(NotFound):
     pass
 
 

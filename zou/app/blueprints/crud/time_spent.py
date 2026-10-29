@@ -1,16 +1,15 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
-
 from sqlalchemy import func
 
-from zou.app.utils import events
-
-from zou.app.blueprints.crud.base import BaseModelsResource, BaseModelResource
-from zou.app.services import permissions_service, tasks_service, user_service
-
-from zou.app.models.time_spent import TimeSpent
-from zou.app.models.task import Task
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.exceptions import WrongParameterException
+from zou.app.models.task import Task
+from zou.app.models.time_spent import TimeSpent
+from zou.app.services import permissions_service, tasks_service, user_service
+from zou.app.utils import events
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi/time_spent.yml")
 
 
 class TimeSpentsResource(BaseModelsResource):
@@ -18,7 +17,7 @@ class TimeSpentsResource(BaseModelsResource):
         BaseModelsResource.__init__(self, TimeSpent)
 
     @jwt_required()
-    @swag_from("openapi/TimeSpentsResource_get.yml")
+    @swag_from(SPECS["TimeSpentsResource_get"])
     def get(self):
         """
         Get time spents
@@ -26,7 +25,7 @@ class TimeSpentsResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/TimeSpentsResource_post.yml")
+    @swag_from(SPECS["TimeSpentsResource_post"])
     def post(self):
         """
         Create time spent
@@ -80,7 +79,7 @@ class TimeSpentResource(BaseModelResource):
         )
 
     @jwt_required()
-    @swag_from("openapi/TimeSpentResource_get.yml")
+    @swag_from(SPECS["TimeSpentResource_get"])
     def get(self, instance_id):
         """
         Get time spent
@@ -88,7 +87,7 @@ class TimeSpentResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/TimeSpentResource_put.yml")
+    @swag_from(SPECS["TimeSpentResource_put"])
     def put(self, instance_id):
         """
         Update time spent
@@ -96,7 +95,7 @@ class TimeSpentResource(BaseModelResource):
         return super().put(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/TimeSpentResource_delete.yml")
+    @swag_from(SPECS["TimeSpentResource_delete"])
     def delete(self, instance_id):
         """
         Delete time spent

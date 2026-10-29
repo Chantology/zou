@@ -1,11 +1,7 @@
 from tests.base import ApiDBTestCase
-
 from zou.app.models.output_file import OutputFile
-
-from zou.app.utils import events
-
-from zou.app.utils import fields
-from zou.app.services import projects_service
+from zou.app.services import projects_service, tasks_service
+from zou.app.utils import events, fields
 
 
 class OutputFileTestCase(ApiDBTestCase):
@@ -39,6 +35,12 @@ class OutputFileTestCase(ApiDBTestCase):
         output_files = self.get("data/output-files")
         self.assertEqual(len(output_files), 3)
 
+    def test_get_output_files_as_a_vendor_of_this_project_only(self):
+        artist_id = self.generate_fixture_user_cg_artist()["id"]
+        projects_service.add_team_member(self.project.id, artist_id, "vendor")
+        self.log_in_cg_artist()
+        self.assertEqual(self.get("data/output-files"), [])
+
     def test_get_output_file(self):
         output_file = self.get_first("data/output-files")
         output_file_again = self.get(f"data/output-files/{output_file['id']}")
@@ -65,6 +67,35 @@ class OutputFileTestCase(ApiDBTestCase):
             self.last_event_data["output_file_id"], self.output_file["id"]
         )
         self.assertEqual(self.last_event_data["project_id"], self.project_id)
+
+    def test_update_quality(self):
+        output_file = self.get_first("data/output-files")
+        self.assertIsNone(output_file["quality"])
+        self.put(f"data/output-files/{output_file['id']}", {"quality": "high"})
+        output_file_again = self.get(f"data/output-files/{output_file['id']}")
+        self.assertEqual(output_file_again["quality"], "high")
+
+        self.put(f"data/output-files/{output_file['id']}", {"quality": None})
+        output_file_again = self.get(f"data/output-files/{output_file['id']}")
+        self.assertIsNone(output_file_again["quality"])
+
+    def test_update_quality_wrong_value(self):
+        output_file = self.get_first("data/output-files")
+        self.put(
+            f"data/output-files/{output_file['id']}", {"quality": "ultra"}, 400
+        )
+
+    def test_update_quality_permissions(self):
+        self.generate_fixture_user_cg_artist()
+        user_cg_artist_id = self.user_cg_artist["id"]
+        projects_service.add_team_member(self.project_id, user_cg_artist_id)
+        output_file = self.get_first("data/output-files")
+        data = {"quality": "low"}
+
+        self.log_in_cg_artist()
+        self.put(f"data/output-files/{output_file['id']}", data, 403)
+        tasks_service.assign_task(str(self.task.id), user_cg_artist_id)
+        self.put(f"data/output-files/{output_file['id']}", data)
 
     def test_update_output_file(self):
         output_file = self.get_first("data/output-files")

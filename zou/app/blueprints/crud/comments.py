@@ -1,22 +1,21 @@
-from flasgger import swag_from
 from flask_jwt_extended import jwt_required
 
-
-from zou.app.models.comment import Comment
+from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
 from zou.app.models.attachment_file import AttachmentFile
-
+from zou.app.models.comment import Comment
 from zou.app.services import (
     comments_service,
     deletion_service,
     notifications_service,
-    persons_service,
-    tasks_service,
     permissions_service,
+    persons_service,
     task_types_service,
+    tasks_service,
 )
 from zou.app.utils import events, permissions
+from zou.app.utils.openapi import load_specs, swag_from
 
-from zou.app.blueprints.crud.base import BaseModelResource, BaseModelsResource
+SPECS = load_specs(__file__, "openapi/comments.yml")
 
 
 class CommentsResource(BaseModelsResource):
@@ -33,7 +32,7 @@ class CommentsResource(BaseModelsResource):
         ]
 
     @jwt_required()
-    @swag_from("openapi/CommentsResource_get.yml")
+    @swag_from(SPECS["CommentsResource_get"])
     def get(self):
         """
         Get comments
@@ -41,7 +40,7 @@ class CommentsResource(BaseModelsResource):
         return super().get()
 
     @jwt_required()
-    @swag_from("openapi/CommentsResource_post.yml")
+    @swag_from(SPECS["CommentsResource_post"])
     def post(self):
         """
         Create comment
@@ -66,10 +65,15 @@ class CommentsResource(BaseModelsResource):
 class CommentResource(BaseModelResource):
     def __init__(self):
         BaseModelResource.__init__(self, Comment)
-        self.protected_fields += ["mentions", "department_mentions"]
+        # The update check reads the task off the stored comment.
+        self.protected_fields += [
+            "mentions",
+            "department_mentions",
+            "object_id",
+        ]
 
     @jwt_required()
-    @swag_from("openapi/CommentResource_get.yml")
+    @swag_from(SPECS["CommentResource_get"])
     def get(self, instance_id):
         """
         Get comment
@@ -77,7 +81,7 @@ class CommentResource(BaseModelResource):
         return super().get(instance_id)
 
     @jwt_required()
-    @swag_from("openapi/CommentResource_put.yml")
+    @swag_from(SPECS["CommentResource_put"])
     def put(self, instance_id):
         """
         Update comment
@@ -266,11 +270,12 @@ class CommentResource(BaseModelResource):
                     permissions_service.check_task_action_access(
                         instance["object_id"]
                     )
-                permissions_service.resolve_project_role(
-                    tasks_service.get_task(instance["object_id"])["project_id"]
-                )
+                project_id = tasks_service.get_task(instance["object_id"])[
+                    "project_id"
+                ]
+                permissions_service.resolve_project_role(project_id)
                 permissions_service.check_task_status_access(
-                    data["task_status_id"]
+                    data["task_status_id"], project_id
                 )
 
             return True
@@ -302,7 +307,7 @@ class CommentResource(BaseModelResource):
         return data
 
     @jwt_required()
-    @swag_from("openapi/CommentResource_delete.yml")
+    @swag_from(SPECS["CommentResource_delete"])
     def delete(self, instance_id):
         """
         Delete comment
@@ -310,7 +315,10 @@ class CommentResource(BaseModelResource):
         comment = comments_service.get_comment(instance_id)
         task = tasks_service.get_task(comment["object_id"])
         permissions_service.resolve_project_role(task["project_id"])
-        if permissions.has_manager_permissions():
+        is_author = (
+            comment["person_id"] == persons_service.get_current_user()["id"]
+        )
+        if permissions.has_manager_permissions() and not is_author:
             permissions_service.check_project_access(task["project_id"])
         else:
             permissions_service.check_person_access(comment["person_id"])

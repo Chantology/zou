@@ -1,22 +1,23 @@
-from flasgger import swag_from
 import datetime
 
 from flask import current_app
 from flask_jwt_extended import jwt_required
 
-from zou.app.models.task import Task
-from zou.app.models.comment import Comment
-from zou.app.models.person import Person
-
 from zou.app.blueprints.source.shotgun.base import (
     BaseImportShotgunResource,
     ImportRemoveShotgunBaseResource,
 )
+from zou.app.models.comment import Comment
+from zou.app.models.person import Person
+from zou.app.models.task import Task
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class ImportShotgunNotesResource(BaseImportShotgunResource):
     @jwt_required()
-    @swag_from("openapi/ImportShotgunNotesResource_post.yml")
+    @swag_from(SPECS["ImportShotgunNotesResource_post"])
     def post(self):
         """
         Import shotgun notes
@@ -70,7 +71,7 @@ class ImportRemoveShotgunNoteResource(ImportRemoveShotgunBaseResource):
         ImportRemoveShotgunBaseResource.__init__(self, Comment)
 
     @jwt_required()
-    @swag_from("openapi/ImportRemoveShotgunNoteResource_post.yml")
+    @swag_from(SPECS["ImportRemoveShotgunNoteResource_post"])
     def post(self):
         """
         Remove shotgun note

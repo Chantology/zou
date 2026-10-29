@@ -1,38 +1,36 @@
-from sqlalchemy.orm import aliased
+from sqlalchemy import Text, cast, func
 from sqlalchemy.exc import IntegrityError, StatementError
-from sqlalchemy import cast, func, Text
+from sqlalchemy.orm import aliased
 
+from zou.app.exceptions import (
+    EpisodeNotFoundException,
+    SceneNotFoundException,
+    SequenceNotFoundException,
+    ShotNotFoundException,
+    WrongIdFormatException,
+)
+from zou.app.models.entity import (
+    Entity,
+    EntityVersion,
+)
+from zou.app.models.preview_file import PreviewFile
+from zou.app.models.project import Project
+from zou.app.models.task import Task
+from zou.app.services import (
+    base_service,
+    entities_service,
+    entity_types_service,
+    index_service,
+    metadata_descriptors_service,
+    persons_service,
+    projects_service,
+    subscriptions_service,
+)
 from zou.app.utils import (
     cache,
     events,
     fields,
     query as query_utils,
-)
-
-from zou.app.models.entity import (
-    Entity,
-    EntityVersion,
-)
-from zou.app.models.project import Project
-from zou.app.models.preview_file import PreviewFile
-from zou.app.models.task import Task
-
-from zou.app.services import (
-    base_service,
-    entities_service,
-    persons_service,
-    projects_service,
-    index_service,
-    entity_types_service,
-    subscriptions_service,
-    metadata_descriptors_service,
-)
-from zou.app.exceptions import (
-    EpisodeNotFoundException,
-    SequenceNotFoundException,
-    SceneNotFoundException,
-    ShotNotFoundException,
-    WrongIdFormatException,
 )
 
 # Field orders of the compact encoding of the with-tasks view. Clients
@@ -242,7 +240,7 @@ def get_scenes(criterions=None):
     return scenes
 
 
-def prepare_shots_and_tasks(criterions=None, compact=False):
+def prepare_shots_and_tasks(criterions=None, compact=False, for_client=None):
     """
     Run the with-tasks queries and return a generator yielding one shot
     at a time. With compact=True each item is a list of values aligned on
@@ -335,6 +333,7 @@ def prepare_shots_and_tasks(criterions=None, compact=False):
         SHOTS_AND_TASKS_TASK_FIELDS,
         assigned_to=assigned_to,
         compact=compact,
+        for_client=for_client,
     )
 
     not_allowed_map = None
@@ -412,12 +411,12 @@ def prepare_shots_and_tasks(criterions=None, compact=False):
     return iterate()
 
 
-def get_shots_and_tasks(criterions=None):
+def get_shots_and_tasks(criterions=None, for_client=None):
     """
     Get all shots for given criterions with related tasks for each shot,
     as a list of dicts.
     """
-    return list(prepare_shots_and_tasks(criterions))
+    return list(prepare_shots_and_tasks(criterions, for_client=for_client))
 
 
 def _get_typed_entity_by_shotgun_id(entity_type, shotgun_id, exception):
@@ -463,7 +462,7 @@ def get_full_shot(shot_id):
     """
     if not fields.is_valid_id(shot_id):
         raise ShotNotFoundException
-    shots = get_shots_and_tasks({"id": shot_id})
+    shots = get_shots_and_tasks({"id": shot_id}, for_client=False)
     if len(shots) == 0:
         raise ShotNotFoundException
     shot = shots[0]

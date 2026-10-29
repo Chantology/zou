@@ -1,9 +1,8 @@
-import datetime
-import unittest
-import orjson as json
-import os
 import ntpath
+import os
+import unittest
 
+import orjson as json
 from mixer.backend.flask import mixer
 
 from tests.fake_stores import seed_fake_stores
@@ -13,30 +12,27 @@ from tests.fake_stores import seed_fake_stores
 # never be real clients, since setUp flushes them between tests.
 seed_fake_stores()
 
+from flask import current_app
+from sqlalchemy.orm import scoped_session, sessionmaker
+
+from tests.factories.contexts import ContextFactories
+from tests.factories.entities import EntityFactories
+from tests.factories.files import FileFactories
+from tests.factories.people import PeopleFactories
+from tests.factories.productions import ProductionFactories
+from tests.factories.schedule import ScheduleFactories
+from tests.factories.tasks import TaskFactories
 from zou.app import app, config, db
-from zou.app.utils import events, fields, fs
 from zou.app.services import (
     tasks_service,
 )
-
 from zou.app.stores import (
     auth_tokens_store,
     config_store,
     redis_client,
     redis_lock,
 )
-
-from sqlalchemy.orm import scoped_session
-from sqlalchemy.orm import sessionmaker
-from flask import current_app
-
-from tests.factories.productions import ProductionFactories
-from tests.factories.people import PeopleFactories
-from tests.factories.entities import EntityFactories
-from tests.factories.tasks import TaskFactories
-from tests.factories.files import FileFactories
-from tests.factories.schedule import ScheduleFactories
-from tests.factories.contexts import ContextFactories
+from zou.app.utils import date_helpers, events, fields, fs
 
 # Absolute, so that the folder created and the folder written to are the
 # same one wherever pytest is launched from. One folder per pytest-xdist
@@ -467,7 +463,11 @@ class ApiDBTestCase(
         self.assign_task(task_id, self.user_cg_artist["id"])
 
     def now(self):
-        return datetime.datetime.now().replace(microsecond=0).isoformat()
+        """
+        UTC, like the dates Zou writes.
+        """
+        now = date_helpers.get_utc_now_datetime().replace(microsecond=0)
+        return now.isoformat()
 
     def upload_csv(self, path, name):
         file_path_fixture = self.get_fixture_file_path(

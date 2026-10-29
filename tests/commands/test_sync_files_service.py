@@ -1,18 +1,17 @@
 import os
+import shutil
 import tempfile
 import threading
 import unittest
 import uuid
-
 from unittest import mock
 
 from tests.base import ApiDBTestCase
-
-from zou.app.models.preview_file_storage_state import (
-    PreviewFileStorageState,
-)
 from zou.app.commands import (
     sync_files_service,
+)
+from zou.app.models.preview_file_storage_state import (
+    PreviewFileStorageState,
 )
 from zou.app.stores import file_store
 
@@ -106,6 +105,7 @@ class DownloadFileTestCase(unittest.TestCase):
 
     def setUp(self):
         self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
         self.file_path = os.path.join(self.folder, "preview.mp4")
 
     def test_partial_file_removed_on_error(self):
@@ -143,6 +143,7 @@ class DownloadFromAnotherInstanceTestCase(unittest.TestCase):
 
     def setUp(self):
         self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, ignore_errors=True)
         self.file_path = os.path.join(self.folder, "thumbnail.png")
         self.saved = []
         self.errors = {}

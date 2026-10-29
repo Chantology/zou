@@ -4,23 +4,23 @@ import uuid
 
 import pytest
 
-from tests.base import ApiDBTestCase, TEST_FOLDER
-
+from tests.base import TEST_FOLDER, ApiDBTestCase
 from zou.app.models.attachment_file import AttachmentFile
 from zou.app.models.comment import Comment
 from zou.app.models.person import Person
-from zou.app.models.playlist import Playlist
-from zou.app.models.playlist import Playlist as PlaylistModel
+from zou.app.models.playlist import Playlist, Playlist as PlaylistModel
 from zou.app.models.playlist_share_link import PlaylistShareLink
 from zou.app.models.preview_file import PreviewFile
+from zou.app.models.project import ProjectTaskStatusLink
 from zou.app.models.task import Task
 from zou.app.models.task_status import TaskStatus
 from zou.app.services import (
     comments_service,
+    playlist_sharing_service,
+    preview_file_states_service as states_service,
+    projects_service,
     tasks_service,
 )
-from zou.app.services import playlist_sharing_service
-from zou.app.services import preview_file_states_service as states_service
 from zou.app.stores import file_store
 from zou.app.utils import fs
 
@@ -131,6 +131,14 @@ class ShareLinkTestCase(PlaylistSharingTestCase):
             self.share_path(link["token"]),
             403,
         )
+
+    def test_a_manager_of_this_project_only_handles_its_share_links(self):
+        artist_id = self.generate_fixture_user_cg_artist()["id"]
+        projects_service.add_team_member(self.project.id, artist_id, "manager")
+        self.log_in_cg_artist()
+        link = self.post(self.share_path(), {"can_comment": True}, 201)
+        self.assertEqual(len(self.get(self.share_path())), 1)
+        self.delete(self.share_path(link["token"]), 200)
 
     def test_revoke_share_link_rejects_mismatched_playlist(self):
         """
@@ -346,6 +354,24 @@ class SharedPlaylistReadTestCase(PlaylistSharingTestCase):
         self.assertIn("project", result)
         self.assertIn("task_types", result)
         self.assertIn("task_statuses", result)
+
+    def test_get_shared_playlist_context_with_a_password(self):
+        link = self.post(self.share_path(), {"password": "topsecret123"}, 201)
+        self.log_out()
+        path = self.shared_path(link["token"], "/context")
+        self.get(path, 404)
+        self.get(f"{path}?password=wrong", 404)
+        result = self.get(f"{path}?password=topsecret123")
+        self.assertIn("project", result)
+
+    def test_get_shared_playlist_context_sends_the_comment_setting(self):
+        link = self.post(self.share_path(), {}, 201)
+        closed_link = self.post(self.share_path(), {"can_comment": False}, 201)
+        self.log_out()
+        result = self.get(self.shared_path(link["token"], "/context"))
+        self.assertEqual(result["share_link"], {"can_comment": True})
+        result = self.get(self.shared_path(closed_link["token"], "/context"))
+        self.assertEqual(result["share_link"], {"can_comment": False})
 
 
 class SharedRevisionTestCase(PlaylistSharingTestCase):
@@ -641,6 +667,22 @@ class GuestTestCase(PlaylistSharingTestCase):
         )
         self.assertEqual(guest["id"], guest2["id"])
 
+    def test_the_same_name_makes_another_guest(self):
+        link = self.post(self.share_path(), {}, 201)
+        self.log_out()
+        path = self.shared_path(link["token"], "/guest")
+        guest = self.post(path, {"first_name": "John"}, 201)
+        impostor = self.post(path, {"first_name": "John"}, 201)
+        self.assertNotEqual(guest["id"], impostor["id"])
+
+    def test_a_protected_link_takes_its_password_on_every_route(self):
+        link = self.post(self.share_path(), {"password": "topsecret123"}, 201)
+        self.log_out()
+        path = self.shared_path(link["token"], "/guest")
+        self.post(path, {"first_name": "John"}, 404)
+        self.post(f"{path}?password=wrong", {"first_name": "John"}, 404)
+        self.post(f"{path}?password=topsecret123", {"first_name": "John"}, 201)
+
     def test_create_guest_same_name_different_link(self):
         """
         A guest created via link A must not be reused via link B even
@@ -833,6 +875,40 @@ class GuestCommentTestCase(PlaylistSharingTestCase):
             text="should be rejected",
             task_status=manager_status,
         )
+
+    def test_guest_comment_follows_the_production_override(self):
+        """
+        The production decides over the studio which statuses its guests
+        may set, and the context sends them the decision.
+        """
+        studio_forbidden = TaskStatus.create(
+            name="Retake",
+            short_name="rtk",
+            color="#000000",
+            is_client_allowed=False,
+        )
+        ProjectTaskStatusLink.create(
+            project_id=self.project.id,
+            task_status_id=studio_forbidden.id,
+            is_client_allowed=True,
+        )
+        ProjectTaskStatusLink.create(
+            project_id=self.project.id,
+            task_status_id=self.task_status.id,
+            is_client_allowed=False,
+        )
+        link, guest = self.guest_on_a_share_link()
+        context = self.get(self.shared_path(link["token"], "/context"))
+        allowed = {
+            status["id"]: status["is_client_allowed"]
+            for status in context["task_statuses"]
+        }
+        self.assertIs(allowed[str(studio_forbidden.id)], True)
+        self.assertIs(allowed[str(self.task_status.id)], False)
+        self.post_guest_comment(
+            link, guest, code=400, task_status=self.task_status
+        )
+        self.post_guest_comment(link, guest, task_status=studio_forbidden)
 
     def test_guest_comment_disabled(self):
         link, guest = self.guest_on_a_share_link(can_comment=False)
@@ -1239,6 +1315,7 @@ class SharedFileServingTestCase(PlaylistSharingTestCase):
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp.write(payload)
             tmp_path = tmp.name
+        self.addCleanup(os.remove, tmp_path)
         file_store.add_file("previews", str(preview_file.id), tmp_path)
         self.addCleanup(
             file_store.remove_file,
@@ -1348,6 +1425,7 @@ class SharedFileServingTestCase(PlaylistSharingTestCase):
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp.write(sibling_payload)
             tmp_path = tmp.name
+        self.addCleanup(os.remove, tmp_path)
         file_store.add_file("previews", str(sibling.id), tmp_path)
         self.addCleanup(
             file_store.remove_file, "previews", str(sibling.id), force=True
@@ -1414,6 +1492,7 @@ class SharedFileServingTestCase(PlaylistSharingTestCase):
         with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as tmp:
             tmp.write(payload)
             tmp_path = tmp.name
+        self.addCleanup(os.remove, tmp_path)
         file_store.add_file("previews", str(preview_file.id), tmp_path)
         self.addCleanup(
             file_store.remove_file,
@@ -1498,6 +1577,7 @@ class SharedFileServingTestCase(PlaylistSharingTestCase):
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp.write(payload)
             tmp_path = tmp.name
+        self.addCleanup(os.remove, tmp_path)
         file_store.add_picture("original", str(preview_file.id), tmp_path)
         self.addCleanup(
             file_store.remove_picture,

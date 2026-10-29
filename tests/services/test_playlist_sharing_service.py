@@ -1,9 +1,11 @@
 import datetime
-
 from unittest.mock import patch
 
 from tests.base import ApiDBTestCase
-
+from zou.app.exceptions import (
+    PlaylistShareLinkNotFoundException,
+    WrongParameterException,
+)
 from zou.app.models.attachment_file import AttachmentFile
 from zou.app.models.comment import Comment
 from zou.app.models.person import Person
@@ -11,15 +13,10 @@ from zou.app.models.playlist import Playlist
 from zou.app.models.playlist_share_link import PlaylistShareLink
 from zou.app.models.preview_file import PreviewFile
 from zou.app.models.task import Task
-
 from zou.app.services import (
+    attachment_files_service,
     comments_service,
     playlist_sharing_service,
-    attachment_files_service,
-)
-from zou.app.exceptions import (
-    PlaylistShareLinkNotFoundException,
-    WrongParameterException,
 )
 from zou.app.services.playlist_sharing_service import GuestCommentNotFound
 
@@ -81,6 +78,13 @@ class ShareTokenTestCase(SharedPlaylistTestCase):
             token=self.share(expiration_date=expiration_date)
         ).expiration_date
 
+    def utc_today(self):
+        """
+        validate_share_token compares in UTC, while the local date differs
+        from the UTC one for as many hours a day as the UTC offset.
+        """
+        return datetime.datetime.now(datetime.timezone.utc).date()
+
     def test_a_link_without_expiration_date_never_expires(self):
         self.assertIsNone(self.expires_on(None))
         self.assertIsNone(self.expires_on(""))
@@ -92,7 +96,7 @@ class ShareTokenTestCase(SharedPlaylistTestCase):
         pinning the expiration to the first second of that day killed it
         a full day before the date shown next to it.
         """
-        today = datetime.date.today()
+        today = self.utc_today()
         token = self.share(expiration_date=today.isoformat())
 
         self.assertEqual(
@@ -102,7 +106,7 @@ class ShareTokenTestCase(SharedPlaylistTestCase):
         playlist_sharing_service.validate_share_token(token)
 
     def test_a_link_expires_once_its_day_is_over(self):
-        yesterday = datetime.date.today() - datetime.timedelta(days=1)
+        yesterday = self.utc_today() - datetime.timedelta(days=1)
         token = self.share(expiration_date=yesterday.isoformat())
         self.assertRaises(
             PlaylistShareLinkNotFoundException,
@@ -343,9 +347,13 @@ class SharedPlaylistReadTestCase(SharedPlaylistTestCase):
     shows has to be inlined in the playlist itself.
     """
 
-    def enrich(self, *shots):
+    def enrich(self, *shots, **playlist_fields):
         return playlist_sharing_service.enrich_shots_with_entity_info(
-            {"project_id": str(self.project.id), "shots": list(shots)}
+            {
+                "project_id": str(self.project.id),
+                "shots": list(shots),
+                **playlist_fields,
+            }
         )
 
     def test_get_shared_playlist(self):
@@ -405,6 +413,66 @@ class SharedPlaylistReadTestCase(SharedPlaylistTestCase):
         self.generate_fixture_sequence()
         (shot,) = self.enrich({"id": str(self.sequence.id)})["shots"]
         self.assertEqual(shot["parent_name"], "")
+
+    def test_a_shot_of_a_playlist_for_all_episodes_names_its_episode(self):
+        """
+        Sequence names repeat across episodes: the shots of a playlist for
+        all episodes are placed under their episode and their sequence.
+        The playlist is read the way the share route reads it, which is
+        where the flag comes from.
+        """
+        self.playlist = self.generate_fixture_playlist(
+            "All shots", is_for_all=True
+        )
+        entries = []
+        for episode_name in ("E01", "E02"):
+            episode = self.generate_fixture_episode(episode_name)
+            sequence = self.generate_fixture_sequence(episode_id=episode.id)
+            shot = self.generate_fixture_shot(sequence_id=sequence.id)
+            # Without the key, the reconciliation upstream logs a warning.
+            entries.append(
+                {"entity_id": str(shot.id), "preview_file_id": None}
+            )
+        self.position(*entries)
+
+        playlist = playlist_sharing_service.enrich_shots_with_entity_info(
+            playlist_sharing_service.get_shared_playlist(self.share())
+        )
+        self.assertEqual(
+            [shot["parent_name"] for shot in playlist["shots"]],
+            ["E01 / S01", "E02 / S01"],
+        )
+
+    def test_a_shot_of_an_episode_playlist_is_placed_under_its_sequence(self):
+        """
+        The playlist of an episode already says which one it is, flagged
+        for all episodes or not: the listings ignore the flag there too.
+        """
+        self.generate_fixture_episode()
+        self.generate_fixture_sequence()
+        self.generate_fixture_shot()
+        (shot,) = self.enrich(
+            {"id": str(self.shot.id)},
+            episode_id=str(self.episode.id),
+            is_for_all=True,
+        )["shots"]
+        self.assertEqual(shot["parent_name"], self.sequence.name)
+
+    def test_a_sequence_or_an_asset_for_all_episodes_keeps_its_parent(self):
+        """
+        Only the parent of a parent is added: a sequence stays under its
+        episode alone, and an asset of an All assets playlist under its
+        type.
+        """
+        self.generate_fixture_episode()
+        self.generate_fixture_sequence()
+        sequence, asset = self.enrich(
+            {"id": str(self.sequence.id)},
+            {"id": str(self.asset.id)},
+            is_for_all=True,
+        )["shots"]
+        self.assertEqual(sequence["parent_name"], self.episode.name)
+        self.assertEqual(asset["parent_name"], self.asset_type.name)
 
     def test_the_task_type_and_status_colours_are_inlined(self):
         self.task_type.update({"color": "#111111"})

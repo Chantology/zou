@@ -1,27 +1,27 @@
-from flasgger import swag_from
 from flask.views import MethodView
 from flask_jwt_extended import jwt_required
 from slugify import slugify
 
-from zou.app.utils import date_helpers
-
 from zou.app.services import (
     entities_service,
     files_service,
-    playlists_service,
+    permissions_service,
     persons_service,
+    playlists_service,
     projects_service,
     shots_service,
-    permissions_service,
-    tasks_service,
     task_types_service,
+    tasks_service,
 )
-from zou.app.utils import csv_utils
+from zou.app.utils import csv_utils, date_helpers
+from zou.app.utils.openapi import load_specs, swag_from
+
+SPECS = load_specs(__file__, "openapi.yml")
 
 
 class PlaylistCsvExport(MethodView):
     @jwt_required()
-    @swag_from("openapi/PlaylistCsvExport_get.yml")
+    @swag_from(SPECS["PlaylistCsvExport_get"])
     def get(self, playlist_id):
         """
         Export playlist csv
