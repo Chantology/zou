@@ -46,6 +46,7 @@ from zou.app.blueprints.projects.resources import (
     ProductionTeamMemberResource,
     ProductionTeamResource,
     ProductionTimeSpentsResource,
+    ProductionUntrackedScheduleItemsResource,
 )
 from zou.app.utils.api import configure_api_from_blueprint
 
@@ -174,6 +175,10 @@ routes = [
     (
         "/data/projects/<project_id>/schedule-items/<task_type_id>/sequences",
         ProductionSequencesScheduleItemsResource,
+    ),
+    (
+        "/data/projects/<project_id>/schedule-items/<task_type_id>/untracked",
+        ProductionUntrackedScheduleItemsResource,
     ),
     ("/data/projects/<project_id>/time-spents", ProductionTimeSpentsResource),
     ("/data/projects/<project_id>/budgets", ProductionBudgetsResource),
